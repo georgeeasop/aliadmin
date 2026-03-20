@@ -504,18 +504,35 @@ update() {
 
 config() {
  if [[ $# -gt 1 ]]; then
-   # 如果有参数，尝试使用 soga-tool 设置配置
-   # soga-tool 可能需要配置文件路径，尝试多种方式
-   if [[ -f ${CONFIG_DIR}/soga.conf ]]; then
-     # 尝试使用环境变量或直接传递参数
-     SOGA_CONFIG=${CONFIG_DIR}/soga.conf ${INSTANCE_NAME}-tool $* 2>/dev/null || \
-     ${INSTANCE_NAME}-tool -config=${CONFIG_DIR}/soga.conf $* 2>/dev/null || \
-     ${INSTANCE_NAME}-tool $* --config=${CONFIG_DIR}/soga.conf 2>/dev/null || {
-       echo -e "${yellow}注意: 如果配置未生效，请手动编辑配置文件: ${CONFIG_DIR}/soga.conf${plain}"
-       echo -e "${yellow}或使用命令: ${INSTANCE_NAME}-tool [参数]${plain}"
+   # 如果有参数，使用 soga-tool 设置配置
+   # 移除第一个参数（config），只传递配置参数
+   shift
+   local config_params="$*"
+   
+   if [[ -f ${CONFIG_DIR}/soga.conf ]] || [[ -f /usr/bin/${INSTANCE_NAME}-tool ]]; then
+     # 确保配置目录存在
+     mkdir -p ${CONFIG_DIR}
+     
+     # 切换到配置目录执行
+     cd ${CONFIG_DIR} 2>/dev/null || {
+       echo -e "${red}无法进入配置目录: ${CONFIG_DIR}${plain}"
+       return 1
      }
+     
+     # 执行配置命令
+     echo -e "${yellow}正在配置 ${INSTANCE_NAME}...${plain}"
+     ${INSTANCE_NAME}-tool ${config_params} 2>&1
+     local result=$?
+     
+     if [[ $result -eq 0 ]]; then
+       echo -e "${green}配置成功！${plain}"
+     else
+       echo -e "${yellow}配置命令执行完成，请检查配置文件: ${CONFIG_DIR}/soga.conf${plain}"
+     fi
    else
-     echo -e "${red}配置文件不存在: ${CONFIG_DIR}/soga.conf${plain}"
+     echo -e "${red}配置文件或工具不存在${plain}"
+     echo -e "${yellow}配置文件: ${CONFIG_DIR}/soga.conf${plain}"
+     echo -e "${yellow}工具: /usr/bin/${INSTANCE_NAME}-tool${plain}"
    fi
  else
    # 显示配置文件内容
@@ -814,40 +831,45 @@ config_instance_default() {
         return 0
     fi
     
-    # 使用 soga-tool 配置
-    if [[ -f /usr/bin/${instance_name}-tool ]]; then
+    # 使用 soga 管理脚本的 config 命令
+    if [[ -f /usr/bin/${instance_name} ]]; then
         # 确保配置目录存在
         mkdir -p ${config_dir} || {
             echo -e "${red}无法创建配置目录 ${config_dir}${plain}"
             wait_for_enter
             return 1
         }
-        cd ${config_dir} || {
-            echo -e "${red}无法进入配置目录 ${config_dir}${plain}"
-            wait_for_enter
-            return 1
-        }
         
-        # 执行配置命令
-        echo -e "${yellow}执行配置命令: ${instance_name}-tool ${default_config}${plain}"
-        ${instance_name}-tool ${default_config} 2>&1
+        # 执行配置命令 - 使用管理脚本的 config 命令
+        echo -e "${yellow}执行配置命令: ${instance_name} config ${default_config}${plain}"
+        ${instance_name} config ${default_config} 2>&1
+        local config_result=$?
         
-        if [[ $? -eq 0 ]] || [[ -f ${config_dir}/soga.conf ]]; then
-            echo -e "${green}${instance_name} 默认配置完成！${plain}"
-            # 重启服务
-            echo -e "${yellow}正在重启 ${instance_name}...${plain}"
-            systemctl restart ${instance_name}
-            sleep 2
-            if systemctl is-active --quiet ${instance_name}; then
-                echo -e "${green}${instance_name} 重启成功！${plain}"
+        # 检查配置是否成功
+        if [[ $config_result -eq 0 ]] || [[ -f ${config_dir}/soga.conf ]]; then
+            # 验证配置是否真的写入了
+            sleep 1
+            if grep -q "type=" ${config_dir}/soga.conf 2>/dev/null && grep -q "soga_key=" ${config_dir}/soga.conf 2>/dev/null; then
+                echo -e "${green}${instance_name} 默认配置完成！${plain}"
+                # 重启服务
+                echo -e "${yellow}正在重启 ${instance_name}...${plain}"
+                systemctl restart ${instance_name}
+                sleep 2
+                if systemctl is-active --quiet ${instance_name}; then
+                    echo -e "${green}${instance_name} 重启成功！${plain}"
+                else
+                    echo -e "${red}${instance_name} 重启失败，请检查日志${plain}"
+                fi
             else
-                echo -e "${red}${instance_name} 重启失败，请检查日志${plain}"
+                echo -e "${red}配置写入失败，配置文件内容未更新${plain}"
+                echo -e "${yellow}请手动运行: ${instance_name} config ${default_config}${plain}"
             fi
         else
-            echo -e "${red}配置可能失败，请检查${plain}"
+            echo -e "${red}配置失败，请手动运行以下命令:${plain}"
+            echo -e "${yellow}${instance_name} config ${default_config}${plain}"
         fi
     else
-        echo -e "${red}${instance_name}-tool 不存在，请先安装 ${instance_name}${plain}"
+        echo -e "${red}${instance_name} 管理脚本不存在，请先安装 ${instance_name}${plain}"
     fi
     
     wait_for_enter
@@ -911,8 +933,8 @@ config_instance_custom() {
         return 0
     fi
     
-    # 使用 soga-tool 配置
-    if [[ -f /usr/bin/${instance_name}-tool ]]; then
+    # 使用 soga 管理脚本的 config 命令
+    if [[ -f /usr/bin/${instance_name} ]]; then
         local config_dir="/etc/${instance_name}"
         if [[ "$instance_name" == "soga" ]]; then
             config_dir="/etc/soga"
@@ -924,32 +946,37 @@ config_instance_custom() {
             wait_for_enter
             return 1
         }
-        cd ${config_dir} || {
-            echo -e "${red}无法进入配置目录 ${config_dir}${plain}"
-            wait_for_enter
-            return 1
-        }
         
-        # 执行配置命令
-        echo -e "${yellow}执行配置命令: ${instance_name}-tool ${custom_config}${plain}"
-        ${instance_name}-tool ${custom_config} 2>&1
+        # 执行配置命令 - 使用管理脚本的 config 命令
+        echo -e "${yellow}执行配置命令: ${instance_name} config ${custom_config}${plain}"
+        ${instance_name} config ${custom_config} 2>&1
+        local config_result=$?
         
-        if [[ $? -eq 0 ]] || [[ -f ${config_dir}/soga.conf ]]; then
-            echo -e "${green}${instance_name} 自定义配置完成！${plain}"
-            # 重启服务
-            echo -e "${yellow}正在重启 ${instance_name}...${plain}"
-            systemctl restart ${instance_name}
-            sleep 2
-            if systemctl is-active --quiet ${instance_name}; then
-                echo -e "${green}${instance_name} 重启成功！${plain}"
+        # 检查配置是否成功
+        if [[ $config_result -eq 0 ]] || [[ -f ${config_dir}/soga.conf ]]; then
+            # 验证配置是否真的写入了
+            sleep 1
+            if grep -q "type=" ${config_dir}/soga.conf 2>/dev/null && grep -q "soga_key=" ${config_dir}/soga.conf 2>/dev/null; then
+                echo -e "${green}${instance_name} 自定义配置完成！${plain}"
+                # 重启服务
+                echo -e "${yellow}正在重启 ${instance_name}...${plain}"
+                systemctl restart ${instance_name}
+                sleep 2
+                if systemctl is-active --quiet ${instance_name}; then
+                    echo -e "${green}${instance_name} 重启成功！${plain}"
+                else
+                    echo -e "${red}${instance_name} 重启失败，请检查日志${plain}"
+                fi
             else
-                echo -e "${red}${instance_name} 重启失败，请检查日志${plain}"
+                echo -e "${red}配置写入失败，配置文件内容未更新${plain}"
+                echo -e "${yellow}请手动运行: ${instance_name} config ${custom_config}${plain}"
             fi
         else
-            echo -e "${red}配置可能失败，请检查${plain}"
+            echo -e "${red}配置失败，请手动运行以下命令:${plain}"
+            echo -e "${yellow}${instance_name} config ${custom_config}${plain}"
         fi
     else
-        echo -e "${red}${instance_name}-tool 不存在，请先安装 ${instance_name}${plain}"
+        echo -e "${red}${instance_name} 管理脚本不存在，请先安装 ${instance_name}${plain}"
     fi
     
     wait_for_enter

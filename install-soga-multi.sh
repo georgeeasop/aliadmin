@@ -1285,24 +1285,148 @@ uninstall_instance() {
     fi
     
     echo -e "${yellow}正在卸载 ${instance_name}...${plain}"
+    
+    # 确定正确的路径 - 必须严格验证
+    local soga_dir="/usr/local/${instance_name}"
+    local config_dir="/etc/${instance_name}"
+    
+    if [[ "$instance_name" == "soga" ]]; then
+        soga_dir="/usr/local/soga"
+        config_dir="/etc/soga"
+    fi
+    
+    # 严格验证路径，防止误删
+    if [[ "$instance_name" != "soga" ]]; then
+        # 对于 soga2, soga3 等，确保路径包含实例名
+        if [[ "$soga_dir" != "/usr/local/${instance_name}" ]] || [[ "$config_dir" != "/etc/${instance_name}" ]]; then
+            echo -e "${red}错误: 路径验证失败！${plain}"
+            echo -e "${red}实例名: ${instance_name}${plain}"
+            echo -e "${red}程序目录: ${soga_dir}${plain}"
+            echo -e "${red}配置目录: ${config_dir}${plain}"
+            wait_for_enter
+            return 1
+        fi
+    fi
+    
+    # 再次确认要删除的路径
+    echo -e "${yellow}将删除以下内容:${plain}"
+    echo -e "${yellow}  程序目录: ${soga_dir}${plain}"
+    echo -e "${yellow}  配置目录: ${config_dir}${plain}"
+    echo -e "${yellow}  服务文件: /etc/systemd/system/${instance_name}.service${plain}"
+    echo -e "${yellow}  管理脚本: /usr/bin/${instance_name}${plain}"
+    
+    # 验证路径确实存在且正确
+    if [[ ! -d "$soga_dir" ]] && [[ ! -d "$config_dir" ]]; then
+        echo -e "${yellow}警告: ${instance_name} 的文件似乎已经不存在${plain}"
+    fi
+    
+    # 停止服务
     systemctl stop ${instance_name} 2>/dev/null
     systemctl disable ${instance_name} 2>/dev/null
+    
+    # 删除服务文件
     rm /etc/systemd/system/${instance_name}.service -f
     rm /etc/systemd/system/${instance_name}@.service -f 2>/dev/null
     systemctl daemon-reload
     systemctl reset-failed
     
-    local config_dir="/etc/${instance_name}"
-    if [[ "$instance_name" == "soga" ]]; then
-        config_dir="/etc/soga"
+    # 删除文件 - 使用绝对路径，确保安全
+    if [[ -d "$config_dir" ]]; then
+        echo -e "${yellow}删除配置目录: ${config_dir}${plain}"
+        rm -rf "$config_dir"
     fi
     
-    rm ${config_dir}/ -rf
-    rm /usr/local/${instance_name}/ -rf
-    rm /usr/bin/${instance_name} -f 2>/dev/null
-    rm /usr/bin/${instance_name}-tool -f 2>/dev/null
+    if [[ -d "$soga_dir" ]]; then
+        echo -e "${yellow}删除程序目录: ${soga_dir}${plain}"
+        rm -rf "$soga_dir"
+    fi
     
-    echo -e "${green}${instance_name} 卸载完成！${plain}"
+    # 删除管理脚本
+    if [[ -f "/usr/bin/${instance_name}" ]]; then
+        echo -e "${yellow}删除管理脚本: /usr/bin/${instance_name}${plain}"
+        rm -f "/usr/bin/${instance_name}"
+    else
+        echo -e "${yellow}管理脚本不存在: /usr/bin/${instance_name}${plain}"
+    fi
+    
+    if [[ -f "/usr/bin/${instance_name}-tool" ]]; then
+        echo -e "${yellow}删除工具脚本: /usr/bin/${instance_name}-tool${plain}"
+        rm -f "/usr/bin/${instance_name}-tool"
+    else
+        echo -e "${yellow}工具脚本不存在: /usr/bin/${instance_name}-tool${plain}"
+    fi
+    
+    # 清理可能的日志文件（在配置目录中）
+    if [[ -d "$config_dir" ]]; then
+        echo -e "${yellow}清理配置目录中的日志文件...${plain}"
+        find "$config_dir" -name "*.log" -type f -delete 2>/dev/null
+    fi
+    
+    # 验证卸载是否彻底
+    echo ""
+    echo -e "${blue}验证卸载结果...${plain}"
+    local uninstall_failed=0
+    
+    if [[ -d "$soga_dir" ]]; then
+        echo -e "${red}✗ 程序目录仍存在: ${soga_dir}${plain}"
+        uninstall_failed=1
+    else
+        echo -e "${green}✓ 程序目录已删除: ${soga_dir}${plain}"
+    fi
+    
+    if [[ -d "$config_dir" ]]; then
+        echo -e "${red}✗ 配置目录仍存在: ${config_dir}${plain}"
+        uninstall_failed=1
+    else
+        echo -e "${green}✓ 配置目录已删除: ${config_dir}${plain}"
+    fi
+    
+    if [[ -f "/etc/systemd/system/${instance_name}.service" ]]; then
+        echo -e "${red}✗ 服务文件仍存在: /etc/systemd/system/${instance_name}.service${plain}"
+        uninstall_failed=1
+    else
+        echo -e "${green}✓ 服务文件已删除${plain}"
+    fi
+    
+    if [[ -f "/usr/bin/${instance_name}" ]]; then
+        echo -e "${red}✗ 管理脚本仍存在: /usr/bin/${instance_name}${plain}"
+        uninstall_failed=1
+    else
+        echo -e "${green}✓ 管理脚本已删除${plain}"
+    fi
+    
+    if [[ -f "/usr/bin/${instance_name}-tool" ]]; then
+        echo -e "${red}✗ 工具脚本仍存在: /usr/bin/${instance_name}-tool${plain}"
+        uninstall_failed=1
+    else
+        echo -e "${green}✓ 工具脚本已删除${plain}"
+    fi
+    
+    # 检查 systemd 中是否还有残留
+    if systemctl list-unit-files | grep -q "^${instance_name}\."; then
+        echo -e "${yellow}⚠ 检测到 systemd 中可能还有残留，尝试清理...${plain}"
+        systemctl reset-failed ${instance_name} 2>/dev/null
+    fi
+    
+    if [[ $uninstall_failed -eq 1 ]]; then
+        echo ""
+        echo -e "${red}警告: 部分文件未能完全删除！${plain}"
+        echo -e "${yellow}请手动检查并删除以下残留文件:${plain}"
+        [[ -d "$soga_dir" ]] && echo -e "  ${red}rm -rf ${soga_dir}${plain}"
+        [[ -d "$config_dir" ]] && echo -e "  ${red}rm -rf ${config_dir}${plain}"
+        [[ -f "/etc/systemd/system/${instance_name}.service" ]] && echo -e "  ${red}rm -f /etc/systemd/system/${instance_name}.service${plain}"
+        [[ -f "/usr/bin/${instance_name}" ]] && echo -e "  ${red}rm -f /usr/bin/${instance_name}${plain}"
+        [[ -f "/usr/bin/${instance_name}-tool" ]] && echo -e "  ${red}rm -f /usr/bin/${instance_name}-tool${plain}"
+        echo ""
+        echo -e "${yellow}或者运行以下命令强制清理:${plain}"
+        echo -e "${yellow}  rm -rf ${soga_dir} ${config_dir}${plain}"
+        echo -e "${yellow}  rm -f /etc/systemd/system/${instance_name}.service /usr/bin/${instance_name} /usr/bin/${instance_name}-tool${plain}"
+        echo -e "${yellow}  systemctl daemon-reload${plain}"
+    else
+        echo ""
+        echo -e "${green}${instance_name} 已完全卸载！${plain}"
+    fi
+    
     wait_for_enter
 }
 

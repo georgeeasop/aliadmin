@@ -259,34 +259,60 @@ install_soga() {
         fi
     fi
 
-    tar zxvf soga.tar.gz
+    # 使用临时目录解压，避免覆盖已存在的 soga 目录
+    local temp_extract_dir="soga_temp_extract_$$"
+    echo -e "${yellow}解压到临时目录: ${temp_extract_dir}${plain}"
+    
+    # 创建临时目录
+    mkdir -p ${temp_extract_dir} || {
+        echo -e "${red}无法创建临时目录${plain}"
+        exit 1
+    }
+    
+    # 解压到临时目录
+    tar zxvf soga.tar.gz -C ${temp_extract_dir}
     if [[ $? -ne 0 ]]; then
         echo -e "${red}解压 soga 失败${plain}"
+        rm -rf ${temp_extract_dir}
         exit 1
     fi
     rm soga.tar.gz -f
-    if [[ ! -d soga ]]; then
-        echo -e "${red}解压后未找到 soga 目录${plain}"
-        exit 1
-    fi
-    cd soga
     
-    # 重命名目录
-    cd .. || {
-        echo -e "${red}无法返回上级目录${plain}"
-        exit 1
-    }
-    if [[ ! -d soga ]]; then
-        echo -e "${red}未找到 soga 目录${plain}"
+    # 检查解压后的目录
+    if [[ ! -d ${temp_extract_dir}/soga ]]; then
+        echo -e "${red}解压后未找到 soga 目录${plain}"
+        rm -rf ${temp_extract_dir}
         exit 1
     fi
-    mv soga ${instance_name}
-    if [[ ! -d ${instance_name} ]]; then
-        echo -e "${red}重命名目录失败${plain}"
+    
+    # 验证目标目录不存在或已被删除
+    if [[ -d ${soga_dir} ]]; then
+        echo -e "${red}错误: 目标目录 ${soga_dir} 仍然存在，无法继续安装${plain}"
+        echo -e "${yellow}这可能是之前的删除操作失败，请手动检查${plain}"
+        rm -rf ${temp_extract_dir}
         exit 1
     fi
-    cd ${instance_name} || {
-        echo -e "${red}无法进入 ${instance_name} 目录${plain}"
+    
+    # 从临时目录移动到目标目录
+    echo -e "${yellow}移动文件到目标目录: ${soga_dir}${plain}"
+    mv ${temp_extract_dir}/soga ${soga_dir}
+    if [[ $? -ne 0 ]]; then
+        echo -e "${red}移动目录失败${plain}"
+        rm -rf ${temp_extract_dir}
+        exit 1
+    fi
+    
+    # 清理临时目录
+    rm -rf ${temp_extract_dir}
+    
+    # 验证目标目录
+    if [[ ! -d ${soga_dir} ]]; then
+        echo -e "${red}错误: 目标目录 ${soga_dir} 不存在${plain}"
+        exit 1
+    fi
+    
+    cd ${soga_dir} || {
+        echo -e "${red}无法进入 ${soga_dir} 目录${plain}"
         exit 1
     }
     

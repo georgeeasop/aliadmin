@@ -307,7 +307,16 @@ install_soga() {
     
     # 修改服务文件中的路径 - 确保每个实例使用独立的路径
     if [[ -f soga.service ]]; then
+        echo -e "${yellow}正在修改服务文件模板...${plain}"
+        echo -e "${yellow}  实例名称: ${instance_name}${plain}"
+        echo -e "${yellow}  程序目录: ${soga_dir}${plain}"
+        echo -e "${yellow}  配置目录: ${config_dir}${plain}"
+        
+        # 备份原始服务文件（用于调试）
+        cp soga.service soga.service.bak 2>/dev/null
+        
         # 使用更精确的替换，避免误替换其他实例的路径
+        # 注意：只替换完整的路径，避免部分匹配
         sed -i "s|/usr/local/soga|${soga_dir}|g" soga.service
         sed -i "s|/etc/soga|${config_dir}|g" soga.service
         sed -i "s|Description=soga|Description=${instance_name}|g" soga.service
@@ -327,6 +336,8 @@ install_soga() {
             echo -e "${red}错误: 服务文件路径修改失败！${plain}"
             echo -e "${red}预期: ${soga_dir}/soga${plain}"
             echo -e "${red}实际: ${service_exec}${plain}"
+            echo -e "${yellow}恢复备份的服务文件...${plain}"
+            mv soga.service.bak soga.service 2>/dev/null
             exit 1
         fi
         
@@ -335,7 +346,19 @@ install_soga() {
         if [[ "$work_dir" != "${config_dir}" ]]; then
             echo -e "${yellow}警告: WorkingDirectory 可能不正确，将修复...${plain}"
             sed -i "s|WorkingDirectory=.*|WorkingDirectory=${config_dir}|g" soga.service
+            # 再次验证
+            work_dir=$(grep "WorkingDirectory=" soga.service | cut -d'=' -f2)
+            if [[ "$work_dir" != "${config_dir}" ]]; then
+                echo -e "${red}错误: WorkingDirectory 修复失败！${plain}"
+                echo -e "${red}预期: ${config_dir}${plain}"
+                echo -e "${red}实际: ${work_dir}${plain}"
+                exit 1
+            fi
         fi
+        
+        echo -e "${green}✓ 服务文件模板修改成功${plain}"
+        echo -e "${green}  ExecStart: ${service_exec}${plain}"
+        echo -e "${green}  WorkingDirectory: ${work_dir}${plain}"
     fi
     
     if [[ -f soga@.service ]]; then
@@ -344,16 +367,59 @@ install_soga() {
     fi
     
     # 只删除目标实例的服务文件，不影响其他实例
+    echo -e "${yellow}准备安装服务文件...${plain}"
+    echo -e "${yellow}  目标服务文件: /etc/systemd/system/${instance_name}.service${plain}"
+    
+    # 验证不会误删除其他实例的服务文件
+    for other_instance in soga soga1 soga2 soga3 soga4; do
+        if [[ "$other_instance" != "$instance_name" ]] && [[ -f "/etc/systemd/system/${other_instance}.service" ]]; then
+            echo -e "${green}  ✓ 保护其他实例: ${other_instance}.service (不会被删除)${plain}"
+        fi
+    done
+    
     rm /etc/systemd/system/${instance_name}.service -f
     rm /etc/systemd/system/${instance_name}@.service -f 2>/dev/null
     
     if [[ -f soga.service ]]; then
+        # 在复制前再次验证服务文件内容
+        local final_exec=$(grep "ExecStart=" soga.service | cut -d'=' -f2 | cut -d' ' -f1)
+        local final_work_dir=$(grep "WorkingDirectory=" soga.service | cut -d'=' -f2)
+        
+        echo -e "${yellow}复制前验证:${plain}"
+        echo -e "${yellow}  ExecStart: ${final_exec}${plain}"
+        echo -e "${yellow}  WorkingDirectory: ${final_work_dir}${plain}"
+        
+        if [[ "$final_exec" != "${soga_dir}/soga" ]] || [[ "$final_work_dir" != "${config_dir}" ]]; then
+            echo -e "${red}错误: 服务文件内容验证失败，拒绝复制！${plain}"
+            echo -e "${red}预期 ExecStart: ${soga_dir}/soga${plain}"
+            echo -e "${red}实际 ExecStart: ${final_exec}${plain}"
+            echo -e "${red}预期 WorkingDirectory: ${config_dir}${plain}"
+            echo -e "${red}实际 WorkingDirectory: ${final_work_dir}${plain}"
+            exit 1
+        fi
+        
         cp -f soga.service /etc/systemd/system/${instance_name}.service
         if [[ $? -ne 0 ]]; then
             echo -e "${red}复制服务文件失败${plain}"
             exit 1
         fi
-        echo -e "${green}服务文件已创建: /etc/systemd/system/${instance_name}.service${plain}"
+        
+        # 复制后再次验证系统服务文件
+        local system_exec=$(grep "ExecStart=" /etc/systemd/system/${instance_name}.service 2>/dev/null | cut -d'=' -f2 | cut -d' ' -f1)
+        local system_work_dir=$(grep "WorkingDirectory=" /etc/systemd/system/${instance_name}.service 2>/dev/null | cut -d'=' -f2)
+        
+        if [[ "$system_exec" != "${soga_dir}/soga" ]] || [[ "$system_work_dir" != "${config_dir}" ]]; then
+            echo -e "${red}错误: 系统服务文件验证失败！${plain}"
+            echo -e "${red}预期 ExecStart: ${soga_dir}/soga${plain}"
+            echo -e "${red}实际 ExecStart: ${system_exec}${plain}"
+            echo -e "${red}预期 WorkingDirectory: ${config_dir}${plain}"
+            echo -e "${red}实际 WorkingDirectory: ${system_work_dir}${plain}"
+            exit 1
+        fi
+        
+        echo -e "${green}✓ 服务文件已创建并验证: /etc/systemd/system/${instance_name}.service${plain}"
+        echo -e "${green}  ExecStart: ${system_exec}${plain}"
+        echo -e "${green}  WorkingDirectory: ${system_work_dir}${plain}"
     else
         echo -e "${yellow}警告: 未找到 soga.service 文件${plain}"
     fi
@@ -369,16 +435,74 @@ install_soga() {
     # 验证并修复服务文件，确保 WorkingDirectory 正确
     echo -e "${yellow}验证服务文件配置...${plain}"
     local current_work_dir=$(grep "WorkingDirectory=" /etc/systemd/system/${instance_name}.service 2>/dev/null | cut -d'=' -f2)
-    if [[ "$current_work_dir" != "$config_dir" ]]; then
-        echo -e "${yellow}修复服务文件中的 WorkingDirectory...${plain}"
+    local current_exec=$(grep "ExecStart=" /etc/systemd/system/${instance_name}.service 2>/dev/null | cut -d'=' -f2 | cut -d' ' -f1)
+    
+    if [[ "$current_work_dir" != "$config_dir" ]] || [[ "$current_exec" != "${soga_dir}/soga" ]]; then
+        echo -e "${yellow}修复服务文件中的路径...${plain}"
         if grep -q "WorkingDirectory=" /etc/systemd/system/${instance_name}.service 2>/dev/null; then
             sed -i "s|WorkingDirectory=.*|WorkingDirectory=${config_dir}|g" /etc/systemd/system/${instance_name}.service
         else
             sed -i "/\[Service\]/a WorkingDirectory=${config_dir}" /etc/systemd/system/${instance_name}.service
         fi
+        if [[ "$current_exec" != "${soga_dir}/soga" ]]; then
+            sed -i "s|ExecStart=.*|ExecStart=${soga_dir}/soga|g" /etc/systemd/system/${instance_name}.service
+        fi
         systemctl daemon-reload
         echo -e "${green}服务文件已修复${plain}"
     fi
+    
+    # 关键验证：确保其他实例的服务文件没有被误修改
+    echo ""
+    echo -e "${yellow}验证其他实例的服务文件完整性...${plain}"
+    for other_instance in soga soga1 soga2 soga3 soga4; do
+        if [[ "$other_instance" != "$instance_name" ]] && [[ -f "/etc/systemd/system/${other_instance}.service" ]]; then
+            local other_exec=$(grep "ExecStart=" /etc/systemd/system/${other_instance}.service 2>/dev/null | cut -d'=' -f2 | cut -d' ' -f1)
+            local other_work_dir=$(grep "WorkingDirectory=" /etc/systemd/system/${other_instance}.service 2>/dev/null | cut -d'=' -f2)
+            local expected_other_exec="/usr/local/${other_instance}/soga"
+            local expected_other_config="/etc/${other_instance}"
+            
+            if [[ "$other_instance" == "soga" ]]; then
+                expected_other_exec="/usr/local/soga/soga"
+                expected_other_config="/etc/soga"
+            fi
+            
+            if [[ "$other_exec" != "$expected_other_exec" ]] || [[ "$other_work_dir" != "$expected_other_config" ]]; then
+                echo -e "${red}✗ 警告: ${other_instance} 的服务文件可能被误修改！${plain}"
+                echo -e "${red}  预期 ExecStart: ${expected_other_exec}${plain}"
+                echo -e "${red}  实际 ExecStart: ${other_exec}${plain}"
+                echo -e "${red}  预期 WorkingDirectory: ${expected_other_config}${plain}"
+                echo -e "${red}  实际 WorkingDirectory: ${other_work_dir}${plain}"
+                echo -e "${yellow}  建议运行脚本选择修复 ${other_instance} 服务文件${plain}"
+            else
+                echo -e "${green}✓ ${other_instance} 服务文件正常${plain}"
+            fi
+        fi
+    done
+    echo ""
+    
+    # 在停止和启动服务前，再次验证服务文件
+    echo -e "${yellow}准备管理服务...${plain}"
+    local final_service_exec=$(grep "ExecStart=" /etc/systemd/system/${instance_name}.service 2>/dev/null | cut -d'=' -f2 | cut -d' ' -f1)
+    local final_service_work_dir=$(grep "WorkingDirectory=" /etc/systemd/system/${instance_name}.service 2>/dev/null | cut -d'=' -f2)
+    
+    if [[ "$final_service_exec" != "${soga_dir}/soga" ]] || [[ "$final_service_work_dir" != "${config_dir}" ]]; then
+        echo -e "${red}错误: 服务文件验证失败，拒绝启动服务！${plain}"
+        echo -e "${red}预期 ExecStart: ${soga_dir}/soga${plain}"
+        echo -e "${red}实际 ExecStart: ${final_service_exec}${plain}"
+        echo -e "${red}预期 WorkingDirectory: ${config_dir}${plain}"
+        echo -e "${red}实际 WorkingDirectory: ${final_service_work_dir}${plain}"
+        exit 1
+    fi
+    
+    # 验证可执行文件是否存在
+    if [[ ! -f "${soga_dir}/soga" ]]; then
+        echo -e "${red}错误: 可执行文件不存在: ${soga_dir}/soga${plain}"
+        exit 1
+    fi
+    
+    echo -e "${green}✓ 服务文件验证通过${plain}"
+    echo -e "${green}✓ 可执行文件存在${plain}"
+    echo ""
     
     systemctl stop ${instance_name} 2>/dev/null
     systemctl enable ${instance_name}
@@ -393,14 +517,34 @@ install_soga() {
         echo -e "全新安装，请先配置必要的内容"
     else
         echo -e "${yellow}配置文件已存在: ${config_dir}/soga.conf${plain}"
-        systemctl start ${instance_name}
+        echo -e "${yellow}启动 ${instance_name} 服务...${plain}"
+        
+        # 启动前再次确认服务文件
+        systemctl start ${instance_name}.service
+        local start_result=$?
         sleep 2
-        check_status ${instance_name}
-        echo -e ""
-        if [[ $? == 0 ]]; then
-            echo -e "${green}${instance_name} 重启成功${plain}"
+        
+        if [[ $start_result -eq 0 ]]; then
+            check_status ${instance_name}
+            if [[ $? == 0 ]]; then
+                echo -e "${green}${instance_name} 启动成功${plain}"
+                
+                # 验证日志，确认启动的是正确的实例
+                sleep 1
+                local log_check=$(journalctl -u ${instance_name}.service -n 3 --no-pager 2>/dev/null | grep -E "Started|load config" | tail -1)
+                if [[ -n "$log_check" ]]; then
+                    if echo "$log_check" | grep -q "${instance_name}"; then
+                        echo -e "${green}✓ 日志确认: 启动的是 ${instance_name}${plain}"
+                    else
+                        echo -e "${yellow}⚠ 日志检查: ${log_check}${plain}"
+                    fi
+                fi
+            else
+                echo -e "${red}${instance_name} 可能启动失败，请稍后使用 systemctl status ${instance_name} 查看状态${plain}"
+            fi
         else
-            echo -e "${red}${instance_name} 可能启动失败，请稍后使用 systemctl status ${instance_name} 查看状态${plain}"
+            echo -e "${red}启动命令执行失败 (退出码: $start_result)${plain}"
+            echo -e "${yellow}查看日志: journalctl -u ${instance_name}.service -n 20${plain}"
         fi
     fi
 

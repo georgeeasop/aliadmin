@@ -100,7 +100,7 @@ check_and_install_screen() {
     fi
 }
 
-# 检查实例是否已安装（兼容旧脚本的 systemd 方式和新脚本的 screen 方式）
+# 检查实例是否已安装（只检查配置目录，不检查 systemd）
 is_instance_installed() {
     local instance_name=$1
     local config_dir="/etc/${instance_name}"
@@ -108,22 +108,8 @@ is_instance_installed() {
         config_dir="/etc/soga"
     fi
     
-    # 检查配置目录是否存在（新脚本方式）
+    # 只检查配置目录是否存在
     if [[ -d "$config_dir" ]] && [[ -f "$config_dir/soga.conf" ]]; then
-        return 0
-    fi
-    
-    # 检查 systemd 服务是否存在（旧脚本方式）
-    if [[ -f "/etc/systemd/system/${instance_name}.service" ]]; then
-        return 0
-    fi
-    
-    # 检查程序目录是否存在（旧脚本可能创建了）
-    local soga_dir="/usr/local/${instance_name}"
-    if [[ "$instance_name" == "soga" ]]; then
-        soga_dir="/usr/local/soga"
-    fi
-    if [[ -d "$soga_dir" ]] && [[ -f "$soga_dir/soga" ]]; then
         return 0
     fi
     

@@ -15,8 +15,8 @@ cur_dir=$(pwd)
 # soga 默认配置（除 node_id 外，node_id 需要用户输入）
 SOGA_DEFAULT_TYPE="xboard"
 SOGA_DEFAULT_SERVER_TYPE="ss"
-SOGA_DEFAULT_SOGA_KEY=""
-SOGA_DEFAULT_WEBAPI_URL=""
+SOGA_DEFAULT_SOGA_KEY="5SrOk5VxovqomAVgKAIKBXGednyRpMSw"
+SOGA_DEFAULT_WEBAPI_URL="https://vowa.top/"
 SOGA_DEFAULT_WEBAPI_KEY="M2X84M6a7N0iGHWC8fU7p8bwrVcCBmz"
 
 # soga2 默认配置（除 node_id 外，node_id 需要用户输入）

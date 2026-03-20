@@ -365,6 +365,21 @@ install_soga() {
     if [[ $? -ne 0 ]]; then
         echo -e "${yellow}警告: systemctl daemon-reload 失败${plain}"
     fi
+    
+    # 验证并修复服务文件，确保 WorkingDirectory 正确
+    echo -e "${yellow}验证服务文件配置...${plain}"
+    local current_work_dir=$(grep "WorkingDirectory=" /etc/systemd/system/${instance_name}.service 2>/dev/null | cut -d'=' -f2)
+    if [[ "$current_work_dir" != "$config_dir" ]]; then
+        echo -e "${yellow}修复服务文件中的 WorkingDirectory...${plain}"
+        if grep -q "WorkingDirectory=" /etc/systemd/system/${instance_name}.service 2>/dev/null; then
+            sed -i "s|WorkingDirectory=.*|WorkingDirectory=${config_dir}|g" /etc/systemd/system/${instance_name}.service
+        else
+            sed -i "/\[Service\]/a WorkingDirectory=${config_dir}" /etc/systemd/system/${instance_name}.service
+        fi
+        systemctl daemon-reload
+        echo -e "${green}服务文件已修复${plain}"
+    fi
+    
     systemctl stop ${instance_name} 2>/dev/null
     systemctl enable ${instance_name}
     echo -e "${green}${instance_name} v${last_version}${plain} 安装完成，已设置开机自启"
@@ -1650,17 +1665,150 @@ EOF
         echo -e "${green}${instance_name} 服务文件已创建！${plain}"
     fi
     
+    # 验证服务文件是否正确
+    echo ""
+    echo -e "${blue}验证修复结果...${plain}"
+    local final_work_dir=$(grep "WorkingDirectory=" /etc/systemd/system/${instance_name}.service 2>/dev/null | cut -d'=' -f2)
+    local final_exec=$(grep "ExecStart=" /etc/systemd/system/${instance_name}.service 2>/dev/null | cut -d'=' -f2 | cut -d' ' -f1)
+    
+    if [[ "$final_work_dir" == "$config_dir" ]]; then
+        echo -e "${green}✓ WorkingDirectory 正确: ${final_work_dir}${plain}"
+    else
+        echo -e "${red}✗ WorkingDirectory 不正确: ${final_work_dir} (应该是: ${config_dir})${plain}"
+    fi
+    
+    if [[ "$final_exec" == "${soga_dir}/soga" ]]; then
+        echo -e "${green}✓ ExecStart 正确: ${final_exec}${plain}"
+    else
+        echo -e "${red}✗ ExecStart 不正确: ${final_exec} (应该是: ${soga_dir}/soga)${plain}"
+    fi
+    
     # 尝试启动服务
     systemctl enable ${instance_name}
     systemctl restart ${instance_name}
-    sleep 2
+    sleep 3
     
     if systemctl is-active --quiet ${instance_name}; then
         echo -e "${green}${instance_name} 服务已成功启动！${plain}"
+        
+        # 验证日志，确认是否从正确的配置文件读取
+        echo -e "${yellow}检查日志确认配置路径...${plain}"
+        local log_check=$(journalctl -u ${instance_name} -n 5 --no-pager 2>/dev/null | grep -o "load config <[^>]*>" | head -1)
+        if [[ -n "$log_check" ]]; then
+            if echo "$log_check" | grep -q "$config_dir"; then
+                echo -e "${green}✓ 日志确认: ${log_check} (正确)${plain}"
+            else
+                echo -e "${yellow}⚠ 日志显示: ${log_check} (可能不正确，应该是 ${config_dir}/soga.conf)${plain}"
+            fi
+        fi
     else
         echo -e "${yellow}${instance_name} 服务可能启动失败，请检查日志${plain}"
         echo -e "${yellow}使用命令查看: systemctl status ${instance_name}${plain}"
+        echo -e "${yellow}或查看日志: journalctl -u ${instance_name} -n 20${plain}"
     fi
+    
+    wait_for_enter
+}
+
+# 自动修复所有已安装的实例
+auto_fix_all_instances() {
+    echo -e "${blue}========================================${plain}"
+    echo -e "${green}自动修复所有已安装的实例${plain}"
+    echo -e "${blue}========================================${plain}"
+    echo ""
+    
+    local instances=("soga" "soga2" "soga3" "soga4")
+    local fixed_count=0
+    local skipped_count=0
+    
+    for instance_name in "${instances[@]}"; do
+        if is_instance_installed ${instance_name}; then
+            echo -e "${yellow}检查 ${instance_name}...${plain}"
+            
+            # 确定正确的路径
+            local soga_dir="/usr/local/${instance_name}"
+            local config_dir="/etc/${instance_name}"
+            
+            if [[ "$instance_name" == "soga" ]]; then
+                soga_dir="/usr/local/soga"
+                config_dir="/etc/soga"
+            fi
+            
+            # 检查服务文件是否存在
+            if [[ ! -f "/etc/systemd/system/${instance_name}.service" ]]; then
+                echo -e "${yellow}  ${instance_name} 服务文件不存在，跳过${plain}"
+                skipped_count=$((skipped_count + 1))
+                continue
+            fi
+            
+            # 检查 WorkingDirectory 是否正确
+            local current_work_dir=$(grep "WorkingDirectory=" /etc/systemd/system/${instance_name}.service 2>/dev/null | cut -d'=' -f2)
+            local needs_fix=0
+            
+            if [[ "$current_work_dir" != "$config_dir" ]]; then
+                echo -e "${yellow}  ${instance_name} WorkingDirectory 不正确，需要修复${plain}"
+                needs_fix=1
+            fi
+            
+            # 检查 ExecStart 是否正确
+            local current_exec=$(grep "ExecStart=" /etc/systemd/system/${instance_name}.service 2>/dev/null | cut -d'=' -f2 | cut -d' ' -f1)
+            if [[ "$current_exec" != "${soga_dir}/soga" ]]; then
+                echo -e "${yellow}  ${instance_name} ExecStart 不正确，需要修复${plain}"
+                needs_fix=1
+            fi
+            
+            if [[ $needs_fix -eq 1 ]]; then
+                echo -e "${blue}  正在修复 ${instance_name}...${plain}"
+                
+                # 直接修复服务文件，不等待用户输入
+                local soga_dir="/usr/local/${instance_name}"
+                local config_dir="/etc/${instance_name}"
+                
+                if [[ "$instance_name" == "soga" ]]; then
+                    soga_dir="/usr/local/soga"
+                    config_dir="/etc/soga"
+                fi
+                
+                # 创建正确的服务文件
+                cat > /etc/systemd/system/${instance_name}.service << EOF
+[Unit]
+Description=${instance_name} Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${config_dir}
+ExecStart=${soga_dir}/soga
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+                
+                systemctl daemon-reload
+                systemctl restart ${instance_name} 2>/dev/null
+                
+                echo -e "${green}  ${instance_name} 已修复并重启${plain}"
+                fixed_count=$((fixed_count + 1))
+            else
+                echo -e "${green}  ${instance_name} 服务文件正常${plain}"
+            fi
+        fi
+    done
+    
+    echo ""
+    echo -e "${blue}========================================${plain}"
+    if [[ $fixed_count -gt 0 ]]; then
+        echo -e "${green}修复完成！共修复 ${fixed_count} 个实例${plain}"
+    else
+        echo -e "${green}所有实例服务文件正常，无需修复${plain}"
+    fi
+    if [[ $skipped_count -gt 0 ]]; then
+        echo -e "${yellow}跳过 ${skipped_count} 个未安装的实例${plain}"
+    fi
+    echo -e "${blue}========================================${plain}"
     
     wait_for_enter
 }
@@ -1738,6 +1886,7 @@ show_main_menu() {
     echo -e "  ${green}23.${plain} 修复 soga2 服务文件"
     echo -e "  ${green}24.${plain} 修复 soga 管理脚本"
     echo -e "  ${green}25.${plain} 修复 soga2 管理脚本"
+    echo -e "  ${green}26.${plain} 自动修复所有已安装实例（推荐）"
     echo ""
     echo -e "  ${green}0.${plain} 退出脚本"
     echo ""
@@ -1855,7 +2004,11 @@ main() {
             exit 0
             ;;
         *)
-            echo -e "${red}请输入正确的数字 [0-25]${plain}"
+        26)
+            auto_fix_all_instances
+            ;;
+        *)
+            echo -e "${red}请输入正确的数字 [0-26]${plain}"
             sleep 2
             ;;
         esac

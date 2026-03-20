@@ -20,6 +20,7 @@ SOGA_DEFAULT_WEBAPI_URL="https://vowa.top/"
 SOGA_DEFAULT_WEBAPI_KEY="M2X84M6a7N0iGHWC8fU7p8bwrVcCBmz"
 
 # soga2 默认配置（除 node_id 外，node_id 需要用户输入）
+# 注意：soga2 的默认配置暂未提供，以下为占位符，可根据需要修改
 SOGA2_DEFAULT_TYPE="xboard"
 SOGA2_DEFAULT_SERVER_TYPE="ss"
 SOGA2_DEFAULT_SOGA_KEY="HD7p1XpcTOLgaszkzg4fV2LgfZtYaIXK"
@@ -184,14 +185,60 @@ install_soga() {
     echo -e "${blue}========================================${plain}"
     echo -e "${green}开始安装 ${instance_name}${plain}"
     echo -e "${blue}========================================${plain}"
+    echo -e "${yellow}实例名称: ${instance_name}${plain}"
+    echo -e "${yellow}程序目录: ${soga_dir}${plain}"
+    echo -e "${yellow}配置目录: ${config_dir}${plain}"
+    echo ""
+    
+    # 安全检查：列出所有已安装的实例，确保不会误操作
+    echo -e "${yellow}已安装的实例检查:${plain}"
+    local other_instances=()
+    for i in soga soga1 soga2 soga3 soga4 soga5 soga6 soga7 soga8 soga9; do
+        if [[ "$i" != "$instance_name" ]] && ([[ -f "/etc/systemd/system/${i}.service" ]] || [[ -d "/usr/local/${i}" ]]); then
+            other_instances+=("$i")
+            echo -e "  ${green}✓${plain} ${i} (已安装，不会被影响)"
+        fi
+    done
+    echo ""
     
     cd /usr/local/ || {
         echo -e "${red}无法切换到 /usr/local/ 目录${plain}"
         exit 1
     }
+    
+    # 安全检查：只删除目标实例的目录，绝不删除其他实例
     if [[ -e ${soga_dir}/ ]]; then
         echo -e "${yellow}检测到已存在的目录 ${soga_dir}，将删除后重新安装${plain}"
-        rm ${soga_dir}/ -rf
+        echo -e "${yellow}注意：只删除 ${instance_name} 的目录，不会影响其他实例${plain}"
+        
+        # 三重验证：确保目录路径正确
+        local dir_name=$(basename "${soga_dir}")
+        if [[ "$dir_name" == "$instance_name" ]] || [[ "$dir_name" == "soga" && "$instance_name" == "soga" ]]; then
+            # 再次确认：检查是否与其他实例冲突
+            local conflict=0
+            for other in "${other_instances[@]}"; do
+                if [[ "${soga_dir}" == "/usr/local/${other}" ]]; then
+                    echo -e "${red}错误：目录与其他实例冲突！${plain}"
+                    echo -e "${red}目录: ${soga_dir} 属于实例: ${other}${plain}"
+                    conflict=1
+                    break
+                fi
+            done
+            
+            if [[ $conflict -eq 0 ]]; then
+                rm ${soga_dir}/ -rf
+                echo -e "${green}已删除旧目录: ${soga_dir}${plain}"
+            else
+                exit 1
+            fi
+        else
+            echo -e "${red}错误：目录路径不匹配，拒绝删除！${plain}"
+            echo -e "${red}实例名称: ${instance_name}${plain}"
+            echo -e "${red}目录名称: ${dir_name}${plain}"
+            echo -e "${red}预期目录: /usr/local/${instance_name} 或 /usr/local/soga${plain}"
+            echo -e "${red}实际目录: ${soga_dir}${plain}"
+            exit 1
+        fi
     fi
 
     if [[ $# -le 1 ]] || [[ -z "$2" ]]; then
@@ -258,12 +305,22 @@ install_soga() {
         exit 1
     }
     
-    # 修改服务文件中的路径
+    # 修改服务文件中的路径 - 确保每个实例使用独立的路径
     if [[ -f soga.service ]]; then
+        # 使用更精确的替换，避免误替换其他实例的路径
         sed -i "s|/usr/local/soga|${soga_dir}|g" soga.service
         sed -i "s|/etc/soga|${config_dir}|g" soga.service
         sed -i "s|Description=soga|Description=${instance_name}|g" soga.service
         sed -i "s|ExecStart=/usr/local/soga/soga|ExecStart=${soga_dir}/soga|g" soga.service
+        
+        # 验证服务文件中的路径是否正确
+        local service_exec=$(grep "ExecStart=" soga.service | cut -d'=' -f2 | cut -d' ' -f1)
+        if [[ "$service_exec" != "${soga_dir}/soga" ]]; then
+            echo -e "${red}错误: 服务文件路径修改失败！${plain}"
+            echo -e "${red}预期: ${soga_dir}/soga${plain}"
+            echo -e "${red}实际: ${service_exec}${plain}"
+            exit 1
+        fi
     fi
     
     if [[ -f soga@.service ]]; then
@@ -271,8 +328,9 @@ install_soga() {
         sed -i "s|/etc/soga|${config_dir}|g" soga@.service
     fi
     
+    # 只删除目标实例的服务文件，不影响其他实例
     rm /etc/systemd/system/${instance_name}.service -f
-    rm /etc/systemd/system/${instance_name}@.service -f
+    rm /etc/systemd/system/${instance_name}@.service -f 2>/dev/null
     
     if [[ -f soga.service ]]; then
         cp -f soga.service /etc/systemd/system/${instance_name}.service
@@ -280,6 +338,7 @@ install_soga() {
             echo -e "${red}复制服务文件失败${plain}"
             exit 1
         fi
+        echo -e "${green}服务文件已创建: /etc/systemd/system/${instance_name}.service${plain}"
     else
         echo -e "${yellow}警告: 未找到 soga.service 文件${plain}"
     fi
@@ -295,11 +354,15 @@ install_soga() {
     systemctl enable ${instance_name}
     echo -e "${green}${instance_name} v${last_version}${plain} 安装完成，已设置开机自启"
     
+    # 复制配置文件到实例专用的配置目录（确保每个实例独立）
+    echo -e "${yellow}配置目录: ${config_dir}${plain}"
     if [[ ! -f ${config_dir}/soga.conf ]]; then
         cp soga.conf ${config_dir}/
+        echo -e "${green}配置文件已复制到: ${config_dir}/soga.conf${plain}"
         echo -e ""
         echo -e "全新安装，请先配置必要的内容"
     else
+        echo -e "${yellow}配置文件已存在: ${config_dir}/soga.conf${plain}"
         systemctl start ${instance_name}
         sleep 2
         check_status ${instance_name}
@@ -311,6 +374,7 @@ install_soga() {
         fi
     fi
 
+    # 复制其他配置文件（每个实例独立）
     if [[ ! -f ${config_dir}/blockList ]]; then
         cp blockList ${config_dir}/ 2>/dev/null
     fi
@@ -323,6 +387,8 @@ install_soga() {
     if [[ ! -f ${config_dir}/routes.toml ]]; then
         cp routes.toml ${config_dir}/ 2>/dev/null
     fi
+    
+    echo -e "${green}所有配置文件已复制到: ${config_dir}/${plain}"
     
     # 安装管理脚本
     # 如果是第一个实例且已存在原始 soga 命令，先备份
@@ -345,7 +411,39 @@ install_soga() {
     
     echo -e ""
     echo -e "${green}${instance_name} 安装完成！${plain}"
-    echo -e "${blue}配置文件位置: ${config_dir}/soga.conf${plain}"
+    echo -e "${blue}========================================${plain}"
+    echo -e "${green}安装信息确认:${plain}"
+    echo -e "  实例名称: ${instance_name}"
+    echo -e "  程序目录: ${soga_dir}"
+    echo -e "  配置目录: ${config_dir}"
+    echo -e "  服务文件: /etc/systemd/system/${instance_name}.service"
+    echo -e "  配置文件: ${config_dir}/soga.conf"
+    echo -e "${blue}========================================${plain}"
+    
+    # 最终验证：确保所有路径都正确且独立
+    local verify_ok=1
+    if [[ ! -d "${soga_dir}" ]]; then
+        echo -e "${red}✗ 验证失败: 程序目录不存在${plain}"
+        verify_ok=0
+    fi
+    if [[ ! -f "${soga_dir}/soga" ]]; then
+        echo -e "${red}✗ 验证失败: 可执行文件不存在${plain}"
+        verify_ok=0
+    fi
+    if [[ ! -f "/etc/systemd/system/${instance_name}.service" ]]; then
+        echo -e "${red}✗ 验证失败: 服务文件不存在${plain}"
+        verify_ok=0
+    fi
+    if [[ ! -d "${config_dir}" ]]; then
+        echo -e "${red}✗ 验证失败: 配置目录不存在${plain}"
+        verify_ok=0
+    fi
+    
+    if [[ $verify_ok -eq 1 ]]; then
+        echo -e "${green}✓ 所有路径验证通过，实例 ${instance_name} 已独立安装${plain}"
+    else
+        echo -e "${red}✗ 验证失败，请检查安装过程${plain}"
+    fi
 }
 
 # 生成多实例管理脚本
@@ -362,8 +460,8 @@ green='\033[0;32m'
 yellow='\033[0;33m'
 plain='\033[0m'
 
-# 从命令名获取实例名称
-INSTANCE_NAME=$(basename $0)
+# 从命令名获取实例名称（须与 systemd 服务名一致：soga / soga2 / soga1 …）
+INSTANCE_NAME=$(basename "$0")
 SOGA_DIR="__SOGA_DIR__"
 CONFIG_DIR="__CONFIG_DIR__"
 
@@ -501,79 +599,122 @@ update() {
  fi
 }
 
-config() {
- # 确定配置目录 - 优先使用 CONFIG_DIR 变量
- local current_config_dir="${CONFIG_DIR}"
- 
- # 如果 CONFIG_DIR 是占位符或未设置，根据实例名称确定
- if [[ -z "$current_config_dir" ]] || [[ "$current_config_dir" == "__CONFIG_DIR__" ]]; then
-   if [[ "${INSTANCE_NAME}" == "soga" ]]; then
-     current_config_dir="/etc/soga"
-   elif [[ "${INSTANCE_NAME}" == "soga2" ]]; then
-     current_config_dir="/etc/soga2"
-   elif [[ "${INSTANCE_NAME}" == "soga3" ]]; then
-     current_config_dir="/etc/soga3"
-   elif [[ "${INSTANCE_NAME}" == "soga4" ]]; then
-     current_config_dir="/etc/soga4"
+# 说明：官方 soga-tool 多数情况下固定写 /etc/soga/soga.conf，多实例会串配置。
+# 此处改为只向「本实例」的 soga.conf 写入 key=value，互不干扰。
+apply_kv_to_soga_conf() {
+ local conf="$1"
+ local tpl_dir="$2"
+ shift 2
+ mkdir -p "$(dirname "$conf")"
+ if [[ ! -f "$conf" ]]; then
+   if [[ -f "${tpl_dir}/soga.conf" ]]; then
+     cp "${tpl_dir}/soga.conf" "$conf"
    else
-     current_config_dir="/etc/${INSTANCE_NAME}"
+     echo -e "${red}缺少模板: ${tpl_dir}/soga.conf${plain}"
+     return 1
    fi
  fi
-   
+ local arg key val found tmp
+ for arg in "$@"; do
+   [[ "$arg" == *=* ]] || continue
+   key="${arg%%=*}"
+   val="${arg#*=}"
+   [[ -n "$key" ]] || continue
+   found=0
+   tmp="${conf}.tmp.$$"
+   while IFS= read -r line || [[ -n "$line" ]]; do
+     if [[ "$line" == "${key}="* ]]; then
+       printf '%s\n' "${key}=${val}"
+       found=1
+     else
+       printf '%s\n' "$line"
+     fi
+   done < "$conf" > "$tmp" || return 1
+   if [[ $found -eq 0 ]]; then
+     printf '%s\n' "${key}=${val}" >> "$tmp"
+   fi
+   mv "$tmp" "$conf" || return 1
+ done
+ local need_api=0
+ for arg in "$@"; do
+   [[ "$arg" == webapi_url=* || "$arg" == webapi_key=* ]] && need_api=1
+ done
+ if [[ $need_api -eq 1 ]]; then
+   found=0
+   tmp="${conf}.tmp.$$"
+   while IFS= read -r line || [[ -n "$line" ]]; do
+     if [[ "$line" == "api="* ]]; then
+       printf '%s\n' "api=webapi"
+       found=1
+     else
+       printf '%s\n' "$line"
+     fi
+   done < "$conf" > "$tmp" || return 1
+   if [[ $found -eq 0 ]]; then
+     printf '%s\n' "api=webapi" >> "$tmp"
+   fi
+   mv "$tmp" "$conf" || return 1
+ fi
+ return 0
+}
+
+config() {
+ # 配置目录严格基于命令名（服务名）：soga -> /etc/soga，soga2 -> /etc/soga2，soga1 -> /etc/soga1
+ # 绝不使用 CONFIG_DIR 变量，避免混淆
+ local current_config_dir="/etc/${INSTANCE_NAME}"
+ local conf="${current_config_dir}/soga.conf"
+ 
+ # 验证实例名称有效性（防止空值或错误值）
+ if [[ -z "${INSTANCE_NAME}" ]] || [[ "${INSTANCE_NAME}" == "__INSTANCE_NAME__" ]]; then
+   echo -e "${red}错误: 无法确定实例名称${plain}"
+   return 1
+ fi
+
  if [[ $# -gt 1 ]]; then
-   # 如果有参数，使用 soga-tool 设置配置
-   # 移除第一个参数（config），只传递配置参数
    shift
-   local config_params="$*"
-   
-   if [[ -f /usr/bin/${INSTANCE_NAME}-tool ]]; then
-     # 确保配置目录存在
-     mkdir -p "${current_config_dir}"
-     
-     # 验证配置目录是否正确（防止配置到错误的目录）
-     local expected_dir=""
-     if [[ "${INSTANCE_NAME}" == "soga" ]]; then
-       expected_dir="/etc/soga"
-     else
-       expected_dir="/etc/${INSTANCE_NAME}"
-     fi
-     
-     if [[ "$current_config_dir" != "$expected_dir" ]] && [[ "$CONFIG_DIR" != "__CONFIG_DIR__" ]]; then
-       echo -e "${yellow}警告: 配置目录 (${current_config_dir}) 与预期 (${expected_dir}) 不一致${plain}"
-       echo -e "${yellow}将使用预期目录: ${expected_dir}${plain}"
-       current_config_dir="$expected_dir"
-     fi
-     
-     # 切换到配置目录执行
-     cd "${current_config_dir}" 2>/dev/null || {
-       echo -e "${red}无法进入配置目录: ${current_config_dir}${plain}"
-       return 1
-     }
-     
-     # 执行配置命令
-     echo -e "${yellow}正在配置 ${INSTANCE_NAME}...${plain}"
-     echo -e "${yellow}配置目录: ${current_config_dir}${plain}"
-     ${INSTANCE_NAME}-tool ${config_params} 2>&1
-     local result=$?
-     
-     if [[ $result -eq 0 ]]; then
-       echo -e "${green}配置成功！${plain}"
-       echo -e "${green}配置文件: ${current_config_dir}/soga.conf${plain}"
-     else
-       echo -e "${yellow}配置命令执行完成，请检查配置文件: ${current_config_dir}/soga.conf${plain}"
-     fi
-   else
-     echo -e "${red}工具不存在: /usr/bin/${INSTANCE_NAME}-tool${plain}"
+   if [[ ! -d "${SOGA_DIR}" ]]; then
+     echo -e "${red}程序目录不存在: ${SOGA_DIR}${plain}"
      return 1
+   fi
+   
+   # 明确显示正在配置哪个实例，防止混淆
+   echo -e "${yellow}========================================${plain}"
+   echo -e "${yellow}正在配置实例: ${INSTANCE_NAME}${plain}"
+   echo -e "${yellow}配置文件: ${conf}${plain}"
+   echo -e "${yellow}程序目录: ${SOGA_DIR}${plain}"
+   echo -e "${yellow}========================================${plain}"
+   echo ""
+   
+   # 验证：确保不会配置到错误的文件
+   local expected_conf="/etc/${INSTANCE_NAME}/soga.conf"
+   if [[ "$conf" != "$expected_conf" ]]; then
+     echo -e "${red}错误: 配置路径不匹配！${plain}"
+     echo -e "${red}预期: ${expected_conf}${plain}"
+     echo -e "${red}实际: ${conf}${plain}"
+     return 1
+   fi
+   
+   apply_kv_to_soga_conf "$conf" "${SOGA_DIR}" "$@" || return 1
+   echo ""
+   echo -e "${green}配置完成！${plain}"
+   echo -e "${green}配置文件: ${conf}${plain}"
+   
+   # 验证配置是否真的写入了正确的文件
+   if [[ -f "$conf" ]]; then
+     echo -e "${green}✓ 配置文件已更新${plain}"
+   else
+     echo -e "${red}✗ 警告: 配置文件可能未创建${plain}"
    fi
  else
    # 显示配置文件内容
-   if [[ -f ${current_config_dir}/soga.conf ]]; then
-     echo -e "${yellow}配置文件位置: ${current_config_dir}/soga.conf${plain}"
+   if [[ -f "$conf" ]]; then
+     echo -e "${yellow}实例: ${INSTANCE_NAME}${plain}"
+     echo -e "${yellow}配置文件位置: ${conf}${plain}"
      echo ""
-     cat ${current_config_dir}/soga.conf
+     cat "$conf"
    else
-     echo -e "${red}配置文件不存在: ${current_config_dir}/soga.conf${plain}"
+     echo -e "${red}配置文件不存在: ${conf}${plain}"
+     echo -e "${yellow}实例: ${INSTANCE_NAME}${plain}"
    fi
  fi
 }
@@ -793,21 +934,9 @@ config_instance_default() {
         return 1
     fi
     
-    # 确保使用正确的配置目录
+    # 配置目录与 systemd 服务名一致：soga->/etc/soga，soga2->/etc/soga2，soga1->/etc/soga1
     local config_dir="/etc/${instance_name}"
-    if [[ "$instance_name" == "soga" ]]; then
-        config_dir="/etc/soga"
-    elif [[ "$instance_name" == "soga2" ]]; then
-        config_dir="/etc/soga2"
-    elif [[ "$instance_name" == "soga3" ]]; then
-        config_dir="/etc/soga3"
-    elif [[ "$instance_name" == "soga4" ]]; then
-        config_dir="/etc/soga4"
-    fi
-    
-    # 验证配置目录是否正确
     if [[ ! -d "$config_dir" ]] && [[ -f /etc/systemd/system/${instance_name}.service ]]; then
-        # 如果目录不存在但服务存在，创建目录
         mkdir -p "$config_dir"
     fi
     
@@ -880,35 +1009,52 @@ config_instance_default() {
     
     # 使用 soga 管理脚本的 config 命令
     if [[ -f /usr/bin/${instance_name} ]]; then
-        # 确保配置目录存在
+        # 验证实例名称和配置目录的一致性
+        local expected_config_dir="/etc/${instance_name}"
+        if [[ "$config_dir" != "$expected_config_dir" ]]; then
+            echo -e "${red}错误: 配置目录不匹配！${plain}"
+            echo -e "${red}实例名称: ${instance_name}${plain}"
+            echo -e "${red}预期目录: ${expected_config_dir}${plain}"
+            echo -e "${red}实际目录: ${config_dir}${plain}"
+            wait_for_enter
+            return 1
+        fi
+        
         mkdir -p "${config_dir}" || {
             echo -e "${red}无法创建配置目录 ${config_dir}${plain}"
             wait_for_enter
             return 1
         }
         
-        # 验证管理脚本中的 CONFIG_DIR 是否正确
-        local script_config_dir=$(grep "CONFIG_DIR=" /usr/bin/${instance_name} 2>/dev/null | head -1 | sed 's/.*CONFIG_DIR="\([^"]*\)".*/\1/')
-        if [[ -n "$script_config_dir" ]] && [[ "$script_config_dir" != "$config_dir" ]]; then
-            echo -e "${yellow}警告: 管理脚本中的配置目录 (${script_config_dir}) 与预期 (${config_dir}) 不一致${plain}"
-            echo -e "${yellow}将使用管理脚本中的配置目录: ${script_config_dir}${plain}"
-            config_dir="$script_config_dir"
-        fi
-        
-        # 执行配置命令 - 使用管理脚本的 config 命令
-        echo -e "${yellow}正在配置 ${instance_name} (配置目录: ${config_dir})...${plain}"
+        echo -e "${yellow}========================================${plain}"
+        echo -e "${yellow}正在配置实例: ${instance_name}${plain}"
+        echo -e "${yellow}配置目录: ${config_dir}${plain}"
+        echo -e "${yellow}配置文件: ${config_dir}/soga.conf${plain}"
+        echo -e "${yellow}========================================${plain}"
+        echo ""
         echo -e "${yellow}执行命令: ${instance_name} config ${default_config}${plain}"
+        echo ""
+        
         ${instance_name} config ${default_config} 2>&1
         local config_result=$?
+        echo ""
         
         # 检查配置是否成功
-        if [[ $config_result -eq 0 ]] || [[ -f "${config_dir}/soga.conf" ]]; then
-            # 验证配置是否真的写入了正确的文件
-            sleep 1
-            if [[ -f "${config_dir}/soga.conf" ]] && grep -q "type=" "${config_dir}/soga.conf" 2>/dev/null && grep -q "soga_key=" "${config_dir}/soga.conf" 2>/dev/null; then
+        sleep 1
+        
+        # 验证配置是否真的写入了正确的文件
+        if [[ -f "${config_dir}/soga.conf" ]]; then
+            # 检查配置文件内容
+            if grep -q "type=" "${config_dir}/soga.conf" 2>/dev/null && grep -q "soga_key=" "${config_dir}/soga.conf" 2>/dev/null; then
+                # 验证配置目录是否正确（防止配置到错误的目录）
+                local actual_config=$(grep -E "^(type|soga_key|webapi_url)=" "${config_dir}/soga.conf" 2>/dev/null | head -3)
                 echo -e "${green}${instance_name} 默认配置完成！${plain}"
                 echo -e "${green}配置文件位置: ${config_dir}/soga.conf${plain}"
+                echo -e "${green}配置内容预览:${plain}"
+                echo "$actual_config" | head -3
+                
                 # 重启服务
+                echo ""
                 echo -e "${yellow}正在重启 ${instance_name}...${plain}"
                 systemctl restart ${instance_name}
                 sleep 2
@@ -920,11 +1066,11 @@ config_instance_default() {
             else
                 echo -e "${red}配置写入失败，配置文件内容未更新${plain}"
                 echo -e "${yellow}配置文件位置: ${config_dir}/soga.conf${plain}"
-                echo -e "${yellow}请手动运行: ${instance_name} config ${default_config}${plain}"
+                echo -e "${yellow}请检查配置文件内容${plain}"
             fi
         else
-            echo -e "${red}配置失败，请手动运行以下命令:${plain}"
-            echo -e "${yellow}${instance_name} config ${default_config}${plain}"
+            echo -e "${red}配置文件未创建: ${config_dir}/soga.conf${plain}"
+            echo -e "${yellow}请手动运行: ${instance_name} config ${default_config}${plain}"
         fi
     else
         echo -e "${red}${instance_name} 管理脚本不存在，请先安装 ${instance_name}${plain}"
@@ -993,47 +1139,54 @@ config_instance_custom() {
     
     # 使用 soga 管理脚本的 config 命令
     if [[ -f /usr/bin/${instance_name} ]]; then
-        # 确保使用正确的配置目录
         local config_dir="/etc/${instance_name}"
-        if [[ "$instance_name" == "soga" ]]; then
-            config_dir="/etc/soga"
-        elif [[ "$instance_name" == "soga2" ]]; then
-            config_dir="/etc/soga2"
-        elif [[ "$instance_name" == "soga3" ]]; then
-            config_dir="/etc/soga3"
-        elif [[ "$instance_name" == "soga4" ]]; then
-            config_dir="/etc/soga4"
+        
+        # 验证实例名称和配置目录的一致性
+        local expected_config_dir="/etc/${instance_name}"
+        if [[ "$config_dir" != "$expected_config_dir" ]]; then
+            echo -e "${red}错误: 配置目录不匹配！${plain}"
+            echo -e "${red}实例名称: ${instance_name}${plain}"
+            echo -e "${red}预期目录: ${expected_config_dir}${plain}"
+            echo -e "${red}实际目录: ${config_dir}${plain}"
+            wait_for_enter
+            return 1
         fi
         
-        # 确保配置目录存在
         mkdir -p "${config_dir}" || {
             echo -e "${red}无法创建配置目录 ${config_dir}${plain}"
             wait_for_enter
             return 1
         }
         
-        # 验证管理脚本中的 CONFIG_DIR 是否正确
-        local script_config_dir=$(grep "CONFIG_DIR=" /usr/bin/${instance_name} 2>/dev/null | head -1 | sed 's/.*CONFIG_DIR="\([^"]*\)".*/\1/')
-        if [[ -n "$script_config_dir" ]] && [[ "$script_config_dir" != "$config_dir" ]]; then
-            echo -e "${yellow}警告: 管理脚本中的配置目录 (${script_config_dir}) 与预期 (${config_dir}) 不一致${plain}"
-            echo -e "${yellow}将使用管理脚本中的配置目录: ${script_config_dir}${plain}"
-            config_dir="$script_config_dir"
-        fi
-        
-        # 执行配置命令 - 使用管理脚本的 config 命令
-        echo -e "${yellow}正在配置 ${instance_name} (配置目录: ${config_dir})...${plain}"
+        echo -e "${yellow}========================================${plain}"
+        echo -e "${yellow}正在配置实例: ${instance_name}${plain}"
+        echo -e "${yellow}配置目录: ${config_dir}${plain}"
+        echo -e "${yellow}配置文件: ${config_dir}/soga.conf${plain}"
+        echo -e "${yellow}========================================${plain}"
+        echo ""
         echo -e "${yellow}执行命令: ${instance_name} config ${custom_config}${plain}"
+        echo ""
+        
         ${instance_name} config ${custom_config} 2>&1
         local config_result=$?
+        echo ""
         
         # 检查配置是否成功
-        if [[ $config_result -eq 0 ]] || [[ -f "${config_dir}/soga.conf" ]]; then
-            # 验证配置是否真的写入了正确的文件
-            sleep 1
-            if [[ -f "${config_dir}/soga.conf" ]] && grep -q "type=" "${config_dir}/soga.conf" 2>/dev/null && grep -q "soga_key=" "${config_dir}/soga.conf" 2>/dev/null; then
+        sleep 1
+        
+        # 验证配置是否真的写入了正确的文件
+        if [[ -f "${config_dir}/soga.conf" ]]; then
+            # 检查配置文件内容
+            if grep -q "type=" "${config_dir}/soga.conf" 2>/dev/null && grep -q "soga_key=" "${config_dir}/soga.conf" 2>/dev/null; then
+                # 验证配置目录是否正确（防止配置到错误的目录）
+                local actual_config=$(grep -E "^(type|soga_key|webapi_url)=" "${config_dir}/soga.conf" 2>/dev/null | head -3)
                 echo -e "${green}${instance_name} 自定义配置完成！${plain}"
                 echo -e "${green}配置文件位置: ${config_dir}/soga.conf${plain}"
+                echo -e "${green}配置内容预览:${plain}"
+                echo "$actual_config" | head -3
+                
                 # 重启服务
+                echo ""
                 echo -e "${yellow}正在重启 ${instance_name}...${plain}"
                 systemctl restart ${instance_name}
                 sleep 2
@@ -1045,11 +1198,11 @@ config_instance_custom() {
             else
                 echo -e "${red}配置写入失败，配置文件内容未更新${plain}"
                 echo -e "${yellow}配置文件位置: ${config_dir}/soga.conf${plain}"
-                echo -e "${yellow}请手动运行: ${instance_name} config ${custom_config}${plain}"
+                echo -e "${yellow}请检查配置文件内容${plain}"
             fi
         else
-            echo -e "${red}配置失败，请手动运行以下命令:${plain}"
-            echo -e "${yellow}${instance_name} config ${custom_config}${plain}"
+            echo -e "${red}配置文件未创建: ${config_dir}/soga.conf${plain}"
+            echo -e "${yellow}请手动运行: ${instance_name} config ${custom_config}${plain}"
         fi
     else
         echo -e "${red}${instance_name} 管理脚本不存在，请先安装 ${instance_name}${plain}"
@@ -1230,15 +1383,21 @@ fix_management_script() {
     fi
     
     echo -e "${blue}开始修复 ${instance_name} 管理脚本...${plain}"
+    echo -e "${yellow}实例名称: ${instance_name}${plain}"
     
-    # 确定正确的路径
+    # 确定正确的路径（严格基于实例名称）
     local soga_dir="/usr/local/${instance_name}"
     local config_dir="/etc/${instance_name}"
     
+    # 特殊处理：第一个实例可能使用 soga 而不是 soga1
     if [[ "$instance_name" == "soga" ]]; then
         soga_dir="/usr/local/soga"
         config_dir="/etc/soga"
     fi
+    
+    echo -e "${yellow}程序目录: ${soga_dir}${plain}"
+    echo -e "${yellow}配置目录: ${config_dir}${plain}"
+    echo ""
     
     # 验证目录是否存在
     if [[ ! -d "$soga_dir" ]]; then
@@ -1256,12 +1415,22 @@ fix_management_script() {
         return 1
     fi
     
+    # 验证路径一致性
+    if [[ "$soga_dir" != "/usr/local/${instance_name}" ]] && [[ ! ("$instance_name" == "soga" && "$soga_dir" == "/usr/local/soga") ]]; then
+        echo -e "${red}错误: 路径不一致！${plain}"
+        echo -e "${red}实例名称: ${instance_name}${plain}"
+        echo -e "${red}程序目录: ${soga_dir}${plain}"
+        wait_for_enter
+        return 1
+    fi
+    
     # 重新生成管理脚本
     install_management_script ${instance_name} ${soga_dir} ${config_dir}
     
     echo -e "${green}${instance_name} 管理脚本已修复！${plain}"
     echo -e "${green}配置目录: ${config_dir}${plain}"
     echo -e "${green}程序目录: ${soga_dir}${plain}"
+    echo -e "${green}管理命令: /usr/bin/${instance_name}${plain}"
     
     wait_for_enter
 }

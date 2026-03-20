@@ -313,6 +313,14 @@ install_soga() {
         sed -i "s|Description=soga|Description=${instance_name}|g" soga.service
         sed -i "s|ExecStart=/usr/local/soga/soga|ExecStart=${soga_dir}/soga|g" soga.service
         
+        # 确保 WorkingDirectory 指向配置目录，这样 soga 会从正确的目录读取配置
+        if grep -q "WorkingDirectory=" soga.service; then
+            sed -i "s|WorkingDirectory=.*|WorkingDirectory=${config_dir}|g" soga.service
+        else
+            # 如果没有 WorkingDirectory，在 [Service] 部分添加
+            sed -i "/\[Service\]/a WorkingDirectory=${config_dir}" soga.service
+        fi
+        
         # 验证服务文件中的路径是否正确
         local service_exec=$(grep "ExecStart=" soga.service | cut -d'=' -f2 | cut -d' ' -f1)
         if [[ "$service_exec" != "${soga_dir}/soga" ]]; then
@@ -320,6 +328,13 @@ install_soga() {
             echo -e "${red}预期: ${soga_dir}/soga${plain}"
             echo -e "${red}实际: ${service_exec}${plain}"
             exit 1
+        fi
+        
+        # 验证 WorkingDirectory 是否正确
+        local work_dir=$(grep "WorkingDirectory=" soga.service | cut -d'=' -f2)
+        if [[ "$work_dir" != "${config_dir}" ]]; then
+            echo -e "${yellow}警告: WorkingDirectory 可能不正确，将修复...${plain}"
+            sed -i "s|WorkingDirectory=.*|WorkingDirectory=${config_dir}|g" soga.service
         fi
     fi
     
@@ -1473,6 +1488,14 @@ fix_service_file() {
         sed -i "s|Description=soga|Description=${instance_name}|g" ${soga_dir}/soga.service
         sed -i "s|ExecStart=/usr/local/soga/soga|ExecStart=${soga_dir}/soga|g" ${soga_dir}/soga.service
         
+        # 确保 WorkingDirectory 指向配置目录
+        if grep -q "WorkingDirectory=" ${soga_dir}/soga.service; then
+            sed -i "s|WorkingDirectory=.*|WorkingDirectory=${config_dir}|g" ${soga_dir}/soga.service
+        else
+            # 如果没有 WorkingDirectory，在 [Service] 部分添加
+            sed -i "/\[Service\]/a WorkingDirectory=${config_dir}" ${soga_dir}/soga.service
+        fi
+        
         # 复制服务文件
         cp -f ${soga_dir}/soga.service /etc/systemd/system/${instance_name}.service
         systemctl daemon-reload
@@ -1481,7 +1504,7 @@ fix_service_file() {
     else
         echo -e "${yellow}未找到原始服务文件模板，手动创建...${plain}"
         
-        # 手动创建服务文件
+        # 手动创建服务文件 - WorkingDirectory 必须指向配置目录
         cat > /etc/systemd/system/${instance_name}.service << EOF
 [Unit]
 Description=${instance_name} Service
@@ -1490,7 +1513,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=${soga_dir}
+WorkingDirectory=${config_dir}
 ExecStart=${soga_dir}/soga
 Restart=always
 RestartSec=5s

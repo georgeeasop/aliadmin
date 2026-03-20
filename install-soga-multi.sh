@@ -2399,13 +2399,12 @@ main() {
         25)
             fix_management_script "soga2"
             ;;
+        26)
+            auto_fix_all_instances
+            ;;
         0)
             echo -e "${green}退出脚本${plain}"
             exit 0
-            ;;
-        *)
-        26)
-            auto_fix_all_instances
             ;;
         *)
             echo -e "${red}请输入正确的数字 [0-26]${plain}"

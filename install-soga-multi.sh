@@ -306,12 +306,26 @@ install_soga_instance() {
             return 0
         fi
         
-        # 只停止 screen 方式运行的实例（不处理 systemd）
+        echo -e "${yellow}正在清理 ${instance_name} 的旧文件...${plain}"
+        
+        # 停止 screen 方式运行的实例
         if screen -list 2>/dev/null | grep -q "${instance_name}"; then
             echo -e "${yellow}停止运行中的 ${instance_name} (screen 方式)...${plain}"
             screen -S ${instance_name} -X quit 2>/dev/null
             sleep 1
+            if screen -list 2>/dev/null | grep -q "${instance_name}"; then
+                screen -S ${instance_name} -X kill 2>/dev/null
+            fi
         fi
+        
+        # 完全删除配置目录
+        if [[ -d "$config_dir" ]]; then
+            echo -e "${yellow}删除配置目录: ${config_dir}${plain}"
+            rm -rf "$config_dir"
+        fi
+        
+        echo -e "${green}清理完成，开始全新安装${plain}"
+        echo ""
     fi
     
     # 创建配置目录
@@ -320,15 +334,11 @@ install_soga_instance() {
         exit 1
     }
     
-    # 复制默认配置文件（如果不存在）
+    # 创建空配置文件（全新安装，不复制旧配置）
     if [[ ! -f ${config_dir}/soga.conf ]]; then
-        if [[ -f /usr/local/soga/soga.conf ]]; then
-            cp /usr/local/soga/soga.conf ${config_dir}/soga.conf
-        else
-            # 创建空配置文件
-            touch ${config_dir}/soga.conf
-        fi
+        touch ${config_dir}/soga.conf
         echo -e "${green}配置文件已创建: ${config_dir}/soga.conf${plain}"
+        echo -e "${yellow}注意: 配置文件为空，请先配置后再启动${plain}"
     fi
     
     # 复制其他配置文件模板（如果存在）
@@ -346,22 +356,23 @@ install_soga_instance() {
     # 检查配置文件是否有内容
     local has_config=0
     if [[ -f ${config_dir}/soga.conf ]] && [[ -s ${config_dir}/soga.conf ]]; then
-        # 检查是否有基本配置
+        # 检查是否有基本配置（排除空行和注释）
         if grep -qE "^(type|soga_key|webapi)" ${config_dir}/soga.conf 2>/dev/null; then
             has_config=1
         fi
     fi
     
     if [[ $has_config -eq 1 ]]; then
-        echo -e "${yellow}检测到配置文件已有内容，是否现在启动 ${instance_name}? (y/n, 默认: y):${plain}"
+        echo -e "${yellow}检测到配置文件已有内容，是否现在启动 ${instance_name}? (y/n, 默认: n):${plain}"
         read -p "" start_now
-        start_now=${start_now:-y}
+        start_now=${start_now:-n}
         
         if [[ "$start_now" == "y" || "$start_now" == "Y" ]]; then
             echo ""
             start_instance ${instance_name}
         else
-            echo -e "${yellow}安装完成，请稍后手动启动 ${instance_name}${plain}"
+            echo -e "${yellow}安装完成，请先配置 ${instance_name}，然后启动实例${plain}"
+            echo -e "${yellow}配置命令: 使用脚本菜单选项 5-7${plain}"
             echo -e "${yellow}启动命令: 使用脚本菜单选项 8-11${plain}"
             wait_for_enter
         fi
@@ -638,16 +649,47 @@ start_instance() {
     echo -e "${yellow}正在启动 ${instance_name}...${plain}"
     echo -e "${yellow}配置文件: ${config_dir}/soga.conf${plain}"
     
+    # 检查配置文件是否有有效内容
+    if [[ ! -s ${config_dir}/soga.conf ]] || ! grep -qE "^(type|soga_key|webapi)" ${config_dir}/soga.conf 2>/dev/null; then
+        echo -e "${red}配置文件为空或缺少必要配置！${plain}"
+        echo -e "${yellow}请先配置 ${instance_name}（使用脚本菜单选项 5-7）${plain}"
+        wait_for_enter
+        return 1
+    fi
+    
+    # 检查 soga 主程序是否存在
+    if [[ ! -f /usr/local/soga/soga ]]; then
+        echo -e "${red}soga 主程序不存在: /usr/local/soga/soga${plain}"
+        echo -e "${yellow}请先安装 soga 主程序（使用脚本菜单选项 0）${plain}"
+        wait_for_enter
+        return 1
+    fi
+    
     # 在 screen 中启动 soga
     screen -dmS ${instance_name} /usr/local/soga/soga -c ${config_dir}/soga.conf
     
-    sleep 2
+    sleep 3
     
     if is_instance_running ${instance_name}; then
         echo -e "${green}${instance_name} 启动成功！${plain}"
         echo -e "${yellow}使用 'screen -r ${instance_name}' 查看日志${plain}"
+        
+        # 等待一下，检查是否有错误
+        sleep 1
+        if screen -list 2>/dev/null | grep -q "${instance_name}"; then
+            echo -e "${green}✓ screen 窗口运行正常${plain}"
+        fi
     else
-        echo -e "${red}${instance_name} 启动失败，请检查配置${plain}"
+        echo -e "${red}${instance_name} 启动失败！${plain}"
+        echo -e "${yellow}可能的原因:${plain}"
+        echo -e "${yellow}  1. 配置文件有错误${plain}"
+        echo -e "${yellow}  2. 端口被占用${plain}"
+        echo -e "${yellow}  3. 缺少必要的配置项${plain}"
+        echo ""
+        echo -e "${yellow}查看错误日志:${plain}"
+        echo -e "${yellow}  screen -r ${instance_name}${plain}"
+        echo -e "${yellow}或查看配置文件:${plain}"
+        echo -e "${yellow}  cat ${config_dir}/soga.conf${plain}"
     fi
     
     wait_for_enter

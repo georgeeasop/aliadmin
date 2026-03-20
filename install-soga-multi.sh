@@ -15,8 +15,8 @@ cur_dir=$(pwd)
 # soga 默认配置（除 node_id 外，node_id 需要用户输入）
 SOGA_DEFAULT_TYPE="xboard"
 SOGA_DEFAULT_SERVER_TYPE="ss"
-SOGA_DEFAULT_SOGA_KEY="5SrOk5VxovqomAVgKAIKBXGednyRpMSw"
-SOGA_DEFAULT_WEBAPI_URL="https://vowa.top/"
+SOGA_DEFAULT_SOGA_KEY=""
+SOGA_DEFAULT_WEBAPI_URL=""
 SOGA_DEFAULT_WEBAPI_KEY="M2X84M6a7N0iGHWC8fU7p8bwrVcCBmz"
 
 # soga2 默认配置（除 node_id 外，node_id 需要用户输入）
@@ -100,7 +100,7 @@ check_and_install_screen() {
     fi
 }
 
-# 检查实例是否已安装（检查配置目录和 screen 窗口）
+# 检查实例是否已安装（兼容旧脚本的 systemd 方式和新脚本的 screen 方式）
 is_instance_installed() {
     local instance_name=$1
     local config_dir="/etc/${instance_name}"
@@ -108,22 +108,55 @@ is_instance_installed() {
         config_dir="/etc/soga"
     fi
     
-    # 检查配置目录是否存在
+    # 检查配置目录是否存在（新脚本方式）
     if [[ -d "$config_dir" ]] && [[ -f "$config_dir/soga.conf" ]]; then
+        return 0
+    fi
+    
+    # 检查 systemd 服务是否存在（旧脚本方式）
+    if [[ -f "/etc/systemd/system/${instance_name}.service" ]]; then
+        return 0
+    fi
+    
+    # 检查程序目录是否存在（旧脚本可能创建了）
+    local soga_dir="/usr/local/${instance_name}"
+    if [[ "$instance_name" == "soga" ]]; then
+        soga_dir="/usr/local/soga"
+    fi
+    if [[ -d "$soga_dir" ]] && [[ -f "$soga_dir/soga" ]]; then
+        return 0
+    fi
+    
+    return 1
+}
+
+# 检查实例是否使用 systemd 运行
+is_instance_using_systemd() {
+    local instance_name=$1
+    if [[ -f "/etc/systemd/system/${instance_name}.service" ]]; then
         return 0
     else
         return 1
     fi
 }
 
-# 检查实例是否在运行（检查 screen 窗口）
+# 检查实例是否在运行（兼容 systemd 和 screen 方式）
 is_instance_running() {
     local instance_name=$1
-    if screen -list | grep -q "${instance_name}"; then
-        return 0
-    else
-        return 1
+    
+    # 检查 systemd 服务是否运行
+    if is_instance_using_systemd ${instance_name}; then
+        if systemctl is-active --quiet ${instance_name} 2>/dev/null; then
+            return 0
+        fi
     fi
+    
+    # 检查 screen 窗口是否运行
+    if screen -list 2>/dev/null | grep -q "${instance_name}"; then
+        return 0
+    fi
+    
+    return 1
 }
 
 # 安装/更新 soga 主程序（所有实例共享）
@@ -236,14 +269,32 @@ install_soga_instance() {
     echo -e "${yellow}配置文件: ${config_dir}/soga.conf${plain}"
     echo ""
     
+    # 检查其他已安装的实例（兼容性检查）
+    echo -e "${yellow}检查已安装的实例...${plain}"
+    local other_instances=()
+    for i in soga soga1 soga2 soga3 soga4; do
+        if [[ "$i" != "$instance_name" ]] && is_instance_installed "$i"; then
+            other_instances+=("$i")
+            local run_mode=""
+            if is_instance_using_systemd "$i"; then
+                run_mode="(systemd)"
+            elif is_instance_running "$i"; then
+                run_mode="(screen)"
+            fi
+            echo -e "  ${green}✓${plain} ${i} 已安装 ${run_mode}"
+        fi
+    done
+    
+    if [[ ${#other_instances[@]} -gt 0 ]]; then
+        echo -e "${green}检测到 ${#other_instances[@]} 个已安装的实例，不会影响${plain}"
+    fi
+    echo ""
+    
     # 检查 soga 主程序是否存在
     if [[ ! -f /usr/local/soga/soga ]]; then
         echo -e "${yellow}soga 主程序不存在，先安装主程序...${plain}"
         install_soga_binary
     fi
-    
-    # 检查并安装 screen（用于查看日志）
-    check_and_install_screen
     
     # 检查并安装 screen
     if ! check_and_install_screen; then
@@ -255,6 +306,51 @@ install_soga_instance() {
     # 检查实例是否已存在
     if is_instance_installed ${instance_name}; then
         echo -e "${yellow}${instance_name} 实例已存在${plain}"
+        
+        # 检查是否使用 systemd（旧脚本方式）
+        if is_instance_using_systemd ${instance_name}; then
+            echo -e "${yellow}检测到 ${instance_name} 使用 systemd 方式运行（旧脚本）${plain}"
+            echo -e "${yellow}新脚本使用 screen 方式运行，建议迁移到 screen 方式${plain}"
+            echo ""
+            read -p "是否要迁移到 screen 方式? (y/n, 默认: n): " migrate
+            migrate=${migrate:-n}
+            
+            if [[ "$migrate" == "y" || "$migrate" == "Y" ]]; then
+                # 迁移到 screen 方式
+                echo -e "${yellow}正在迁移 ${instance_name} 到 screen 方式...${plain}"
+                
+                # 停止 systemd 服务
+                if is_instance_running ${instance_name}; then
+                    systemctl stop ${instance_name} 2>/dev/null
+                    systemctl disable ${instance_name} 2>/dev/null
+                    sleep 2
+                fi
+                
+                # 确保配置目录存在
+                if [[ ! -d "$config_dir" ]]; then
+                    mkdir -p "$config_dir"
+                fi
+                
+                # 如果配置文件不存在，从旧位置复制
+                if [[ ! -f "$config_dir/soga.conf" ]]; then
+                    local old_config="/etc/soga/soga.conf"
+                    if [[ "$instance_name" != "soga" ]]; then
+                        old_config="/etc/${instance_name}/soga.conf"
+                    fi
+                    
+                    if [[ -f "$old_config" ]]; then
+                        cp "$old_config" "$config_dir/soga.conf"
+                        echo -e "${green}已复制配置文件${plain}"
+                    fi
+                fi
+                
+                echo -e "${green}迁移完成！${instance_name} 现在使用 screen 方式${plain}"
+                echo ""
+            else
+                echo -e "${yellow}保持 systemd 方式，继续安装...${plain}"
+            fi
+        fi
+        
         read -p "是否要重新安装? (y/n, 默认: n): " reinstall
         reinstall=${reinstall:-n}
         if [[ "$reinstall" != "y" && "$reinstall" != "Y" ]]; then
@@ -297,12 +393,36 @@ install_soga_instance() {
     echo -e "${green}  配置目录: ${config_dir}${plain}"
     echo -e "${green}  配置文件: ${config_dir}/soga.conf${plain}"
     echo ""
-    echo -e "${yellow}请先配置 ${instance_name}，然后启动实例${plain}"
-    echo -e "${yellow}配置命令: 使用脚本菜单选项 5-7${plain}"
-    echo -e "${yellow}启动命令: 使用脚本菜单选项 8-11${plain}"
-    echo ""
     
-    wait_for_enter
+    # 检查配置文件是否有内容
+    local has_config=0
+    if [[ -f ${config_dir}/soga.conf ]] && [[ -s ${config_dir}/soga.conf ]]; then
+        # 检查是否有基本配置
+        if grep -qE "^(type|soga_key|webapi)" ${config_dir}/soga.conf 2>/dev/null; then
+            has_config=1
+        fi
+    fi
+    
+    if [[ $has_config -eq 1 ]]; then
+        echo -e "${yellow}检测到配置文件已有内容，是否现在启动 ${instance_name}? (y/n, 默认: y):${plain}"
+        read -p "" start_now
+        start_now=${start_now:-y}
+        
+        if [[ "$start_now" == "y" || "$start_now" == "Y" ]]; then
+            echo ""
+            start_instance ${instance_name}
+        else
+            echo -e "${yellow}安装完成，请稍后手动启动 ${instance_name}${plain}"
+            echo -e "${yellow}启动命令: 使用脚本菜单选项 8-11${plain}"
+            wait_for_enter
+        fi
+    else
+        echo -e "${yellow}请先配置 ${instance_name}，然后启动实例${plain}"
+        echo -e "${yellow}配置命令: 使用脚本菜单选项 5-7${plain}"
+        echo -e "${yellow}启动命令: 使用脚本菜单选项 8-11${plain}"
+        echo ""
+        wait_for_enter
+    fi
 }
 
 # 等待回车
@@ -602,17 +722,32 @@ stop_instance() {
     
     echo -e "${yellow}正在停止 ${instance_name}...${plain}"
     
-    # 发送 SIGTERM 信号到 screen 窗口中的进程
-    screen -S ${instance_name} -X quit
+    # 优先停止 systemd 服务（旧脚本方式）
+    if is_instance_using_systemd ${instance_name}; then
+        if systemctl is-active --quiet ${instance_name} 2>/dev/null; then
+            echo -e "${yellow}检测到 ${instance_name} 使用 systemd 运行，正在停止...${plain}"
+            systemctl stop ${instance_name} 2>/dev/null
+            sleep 2
+        fi
+    fi
     
-    sleep 2
+    # 停止 screen 窗口（新脚本方式）
+    if screen -list 2>/dev/null | grep -q "${instance_name}"; then
+        echo -e "${yellow}检测到 ${instance_name} 使用 screen 运行，正在停止...${plain}"
+        screen -S ${instance_name} -X quit 2>/dev/null
+        sleep 2
+        
+        if screen -list 2>/dev/null | grep -q "${instance_name}"; then
+            echo -e "${yellow}强制停止 screen 窗口...${plain}"
+            screen -S ${instance_name} -X kill 2>/dev/null
+            sleep 1
+        fi
+    fi
     
     if ! is_instance_running ${instance_name}; then
         echo -e "${green}${instance_name} 已停止${plain}"
     else
-        echo -e "${yellow}${instance_name} 可能仍在运行，尝试强制停止...${plain}"
-        screen -S ${instance_name} -X kill
-        sleep 1
+        echo -e "${yellow}${instance_name} 可能仍在运行${plain}"
     fi
     
     wait_for_enter

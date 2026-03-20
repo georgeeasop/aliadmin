@@ -73,10 +73,53 @@ is_cmd_exist() {
     fi
 }
 
-# 检查实例是否已安装
+# 检查并安装 screen
+check_and_install_screen() {
+    if is_cmd_exist "screen"; then
+        return 0
+    fi
+    
+    echo -e "${yellow}screen 未安装，正在安装...${plain}"
+    
+    if [[ "$release" == "centos" ]]; then
+        yum install -y screen
+    elif [[ "$release" == "debian" ]] || [[ "$release" == "ubuntu" ]]; then
+        apt-get update
+        apt-get install -y screen
+    else
+        echo -e "${red}无法自动安装 screen，请手动安装${plain}"
+        return 1
+    fi
+    
+    if is_cmd_exist "screen"; then
+        echo -e "${green}✓ screen 安装成功${plain}"
+        return 0
+    else
+        echo -e "${red}screen 安装失败${plain}"
+        return 1
+    fi
+}
+
+# 检查实例是否已安装（检查配置目录和 screen 窗口）
 is_instance_installed() {
     local instance_name=$1
-    if [[ -f /etc/systemd/system/${instance_name}.service ]]; then
+    local config_dir="/etc/${instance_name}"
+    if [[ "$instance_name" == "soga" ]]; then
+        config_dir="/etc/soga"
+    fi
+    
+    # 检查配置目录是否存在
+    if [[ -d "$config_dir" ]] && [[ -f "$config_dir/soga.conf" ]]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# 检查实例是否在运行（检查 screen 窗口）
+is_instance_running() {
+    local instance_name=$1
+    if screen -list | grep -q "${instance_name}"; then
         return 0
     else
         return 1
@@ -180,7 +223,7 @@ install_soga_instance() {
     local config_dir="/etc/${instance_name}"
     
     # 如果是第一个实例，使用默认名称 soga
-    if [[ $instance_num -eq 1 ]] && [[ ! -f /etc/systemd/system/soga.service ]]; then
+    if [[ $instance_num -eq 1 ]] && [[ ! -d /etc/soga ]]; then
         instance_name="soga"
         config_dir="/etc/soga"
     fi
@@ -199,6 +242,16 @@ install_soga_instance() {
         install_soga_binary
     fi
     
+    # 检查并安装 screen（用于查看日志）
+    check_and_install_screen
+    
+    # 检查并安装 screen
+    if ! check_and_install_screen; then
+        echo -e "${red}screen 安装失败，无法继续${plain}"
+        wait_for_enter
+        return 1
+    fi
+    
     # 检查实例是否已存在
     if is_instance_installed ${instance_name}; then
         echo -e "${yellow}${instance_name} 实例已存在${plain}"
@@ -209,9 +262,11 @@ install_soga_instance() {
             return 0
         fi
         
-        # 停止服务
-        systemctl stop ${instance_name} 2>/dev/null
-        systemctl disable ${instance_name} 2>/dev/null
+        # 停止运行中的实例
+        if is_instance_running ${instance_name}; then
+            echo -e "${yellow}停止运行中的 ${instance_name}...${plain}"
+            stop_instance ${instance_name}
+        fi
     fi
     
     # 创建配置目录
@@ -238,44 +293,13 @@ install_soga_instance() {
         fi
     done
     
-    # 创建 systemd 服务文件
-    echo -e "${yellow}创建服务文件...${plain}"
-    cat > /etc/systemd/system/${instance_name}.service << EOF
-[Unit]
-Description=${instance_name} Service
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=${config_dir}
-ExecStart=/usr/local/soga/soga -c ${config_dir}/soga.conf
-Restart=always
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    
-    # 验证服务文件
-    local service_exec=$(grep "ExecStart=" /etc/systemd/system/${instance_name}.service | cut -d'=' -f2 | cut -d' ' -f1)
-    local service_config=$(grep "ExecStart=" /etc/systemd/system/${instance_name}.service | grep -o "\-c [^ ]*" | cut -d' ' -f2)
-    
-    if [[ "$service_exec" != "/usr/local/soga/soga" ]] || [[ "$service_config" != "${config_dir}/soga.conf" ]]; then
-        echo -e "${red}错误: 服务文件创建失败！${plain}"
-        exit 1
-    fi
-    
-    systemctl daemon-reload
-    systemctl enable ${instance_name}
-    
     echo -e "${green}✓ ${instance_name} 实例安装完成${plain}"
     echo -e "${green}  配置目录: ${config_dir}${plain}"
     echo -e "${green}  配置文件: ${config_dir}/soga.conf${plain}"
-    echo -e "${green}  服务文件: /etc/systemd/system/${instance_name}.service${plain}"
     echo ""
-    echo -e "${yellow}请使用以下命令配置 ${instance_name}:${plain}"
-    echo -e "${yellow}  ${instance_name} config type=xxx server_type=xxx node_id=xxx ...${plain}"
+    echo -e "${yellow}请先配置 ${instance_name}，然后启动实例${plain}"
+    echo -e "${yellow}配置命令: 使用脚本菜单选项 5-7${plain}"
+    echo -e "${yellow}启动命令: 使用脚本菜单选项 8-11${plain}"
     echo ""
     
     wait_for_enter
@@ -378,19 +402,23 @@ config_instance_default() {
     echo -e "${green}${instance_name} 默认配置完成！${plain}"
     echo -e "${green}配置文件位置: ${config_dir}/soga.conf${plain}"
     
-    # 重启服务
+    # 重启实例
     echo ""
-    echo -e "${yellow}正在重启 ${instance_name}...${plain}"
-    systemctl restart ${instance_name}
-    sleep 2
+    echo -e "${yellow}是否现在启动 ${instance_name}? (y/n, 默认: y):${plain}"
+    read -p "" start_now
+    start_now=${start_now:-y}
     
-    if systemctl is-active --quiet ${instance_name}; then
-        echo -e "${green}${instance_name} 重启成功！${plain}"
+    if [[ "$start_now" == "y" || "$start_now" == "Y" ]]; then
+        # 如果已在运行，先停止
+        if is_instance_running ${instance_name}; then
+            stop_instance ${instance_name}
+            sleep 1
+        fi
+        start_instance ${instance_name}
     else
-        echo -e "${red}${instance_name} 重启失败，请检查日志${plain}"
+        echo -e "${yellow}配置完成，请稍后手动启动 ${instance_name}${plain}"
+        wait_for_enter
     fi
-    
-    wait_for_enter
 }
 
 # 应用配置到文件
@@ -490,16 +518,101 @@ config_instance_custom() {
     echo -e "${green}${instance_name} 自定义配置完成！${plain}"
     echo -e "${green}配置文件位置: ${config_dir}/soga.conf${plain}"
     
-    # 重启服务
+    # 重启实例
     echo ""
-    echo -e "${yellow}正在重启 ${instance_name}...${plain}"
-    systemctl restart ${instance_name}
+    echo -e "${yellow}是否现在启动 ${instance_name}? (y/n, 默认: y):${plain}"
+    read -p "" start_now
+    start_now=${start_now:-y}
+    
+    if [[ "$start_now" == "y" || "$start_now" == "Y" ]]; then
+        # 如果已在运行，先停止
+        if is_instance_running ${instance_name}; then
+            stop_instance ${instance_name}
+            sleep 1
+        fi
+        start_instance ${instance_name}
+    else
+        echo -e "${yellow}配置完成，请稍后手动启动 ${instance_name}${plain}"
+        wait_for_enter
+    fi
+}
+
+# 启动实例（使用 screen）
+start_instance() {
+    local instance_name=$1
+    
+    if ! is_instance_installed ${instance_name}; then
+        echo -e "${red}${instance_name} 未安装，请先安装！${plain}"
+        wait_for_enter
+        return 1
+    fi
+    
+    if is_instance_running ${instance_name}; then
+        echo -e "${yellow}${instance_name} 已在运行中${plain}"
+        wait_for_enter
+        return 0
+    fi
+    
+    local config_dir="/etc/${instance_name}"
+    if [[ "$instance_name" == "soga" ]]; then
+        config_dir="/etc/soga"
+    fi
+    
+    # 检查配置文件是否存在
+    if [[ ! -f ${config_dir}/soga.conf ]]; then
+        echo -e "${red}配置文件不存在: ${config_dir}/soga.conf${plain}"
+        echo -e "${yellow}请先配置 ${instance_name}${plain}"
+        wait_for_enter
+        return 1
+    fi
+    
+    echo -e "${yellow}正在启动 ${instance_name}...${plain}"
+    echo -e "${yellow}配置文件: ${config_dir}/soga.conf${plain}"
+    
+    # 在 screen 中启动 soga
+    screen -dmS ${instance_name} /usr/local/soga/soga -c ${config_dir}/soga.conf
+    
     sleep 2
     
-    if systemctl is-active --quiet ${instance_name}; then
-        echo -e "${green}${instance_name} 重启成功！${plain}"
+    if is_instance_running ${instance_name}; then
+        echo -e "${green}${instance_name} 启动成功！${plain}"
+        echo -e "${yellow}使用 'screen -r ${instance_name}' 查看日志${plain}"
     else
-        echo -e "${red}${instance_name} 重启失败，请检查日志${plain}"
+        echo -e "${red}${instance_name} 启动失败，请检查配置${plain}"
+    fi
+    
+    wait_for_enter
+}
+
+# 停止实例
+stop_instance() {
+    local instance_name=$1
+    
+    if ! is_instance_installed ${instance_name}; then
+        echo -e "${red}${instance_name} 未安装！${plain}"
+        wait_for_enter
+        return 1
+    fi
+    
+    if ! is_instance_running ${instance_name}; then
+        echo -e "${yellow}${instance_name} 未运行${plain}"
+        wait_for_enter
+        return 0
+    fi
+    
+    echo -e "${yellow}正在停止 ${instance_name}...${plain}"
+    
+    # 发送 SIGTERM 信号到 screen 窗口中的进程
+    screen -S ${instance_name} -X quit
+    
+    sleep 2
+    
+    if ! is_instance_running ${instance_name}; then
+        echo -e "${green}${instance_name} 已停止${plain}"
+    else
+        echo -e "${yellow}${instance_name} 可能仍在运行，尝试强制停止...${plain}"
+        screen -S ${instance_name} -X kill
+        sleep 1
     fi
     
     wait_for_enter
@@ -516,16 +629,52 @@ restart_instance() {
     fi
     
     echo -e "${yellow}正在重启 ${instance_name}...${plain}"
-    systemctl restart ${instance_name}
-    sleep 2
     
-    if systemctl is-active --quiet ${instance_name}; then
-        echo -e "${green}${instance_name} 重启成功！${plain}"
-    else
-        echo -e "${red}${instance_name} 重启失败，请检查日志${plain}"
+    # 先停止
+    if is_instance_running ${instance_name}; then
+        stop_instance ${instance_name}
+        sleep 1
     fi
     
-    wait_for_enter
+    # 再启动
+    start_instance ${instance_name}
+}
+
+# 进入 screen 查看日志
+enter_screen() {
+    local instance_name=$1
+    
+    if ! is_instance_installed ${instance_name}; then
+        echo -e "${red}${instance_name} 未安装，请先安装！${plain}"
+        wait_for_enter
+        return 1
+    fi
+    
+    # 检查并安装 screen
+    if ! check_and_install_screen; then
+        wait_for_enter
+        return 1
+    fi
+    
+    local config_dir="/etc/${instance_name}"
+    if [[ "$instance_name" == "soga" ]]; then
+        config_dir="/etc/soga"
+    fi
+    
+    echo -e "${blue}========================================${plain}"
+    echo -e "${green}进入 ${instance_name} 的 screen 窗口${plain}"
+    echo -e "${blue}========================================${plain}"
+    echo ""
+    echo -e "${yellow}screen 使用说明:${plain}"
+    echo -e "  ${green}Ctrl+A${plain}，然后全松开，再按 ${green}D${plain}  - 离开当前 screen 窗口（不关闭）"
+    echo -e "  ${green}Ctrl+A${plain}，然后全松开，再按 ${green}Esc${plain} - 进入复制模式（可用滚轮查看日志）"
+    echo -e "  输入 ${green}exit${plain} - 退出并关闭当前 screen 窗口"
+    echo ""
+    echo -e "${yellow}按回车进入 screen...${plain}"
+    read temp
+    
+    # 进入或创建 screen 窗口
+    screen -R ${instance_name}
 }
 
 # 查看日志
@@ -563,7 +712,7 @@ view_log() {
     fi
     
     echo -e "${yellow}查看方式:${plain}"
-    echo -e "  1. systemd 服务日志（实时，按 Ctrl+C 退出）"
+    echo -e "  1. 进入 screen 窗口查看（推荐，实时日志）"
     echo -e "  2. 查看最新的日志文件内容"
     echo ""
     read -p "请选择 [1/2，默认1]: " log_choice
@@ -578,15 +727,11 @@ view_log() {
             echo ""
             tail -n 100 "$latest_log" | less -R
         else
-            echo -e "${yellow}未找到日志文件，查看 systemd 服务日志...${plain}"
-            echo ""
-            journalctl -u ${instance_name}.service -f --no-pager -n 100 || true
+            echo -e "${yellow}未找到日志文件${plain}"
+            echo -e "${yellow}请使用 screen 方式查看实时日志${plain}"
         fi
     else
-        echo ""
-        echo -e "${blue}查看 systemd 服务日志（按 Ctrl+C 退出）...${plain}"
-        echo ""
-        journalctl -u ${instance_name}.service -f --no-pager -n 100 || true
+        enter_screen ${instance_name}
     fi
     
     wait_for_enter
@@ -619,14 +764,10 @@ uninstall_instance() {
         config_dir="/etc/soga"
     fi
     
-    # 停止服务
-    systemctl stop ${instance_name} 2>/dev/null
-    systemctl disable ${instance_name} 2>/dev/null
-    
-    # 删除服务文件
-    rm /etc/systemd/system/${instance_name}.service -f
-    systemctl daemon-reload
-    systemctl reset-failed
+    # 停止运行中的实例
+    if is_instance_running ${instance_name}; then
+        stop_instance ${instance_name}
+    fi
     
     # 删除配置目录
     if [[ -d "$config_dir" ]]; then
@@ -641,6 +782,7 @@ uninstall_instance() {
     
     echo -e "${green}${instance_name} 卸载完成！${plain}"
     echo -e "${yellow}注意: soga 主程序 (/usr/local/soga) 未删除，其他实例仍可使用${plain}"
+    echo -e "${yellow}注意: screen 窗口已关闭${plain}"
     
     wait_for_enter
 }
@@ -666,17 +808,36 @@ show_main_menu() {
     echo -e "  ${green}6.${plain} 配置默认 soga2 配置"
     echo -e "  ${green}7.${plain} 自定义配置"
     echo ""
+    echo -e "${green}【启动选项】${plain}"
+    echo -e "  ${green}8.${plain} 启动 soga"
+    echo -e "  ${green}9.${plain} 启动 soga2"
+    echo -e "  ${green}10.${plain} 启动 soga3"
+    echo -e "  ${green}11.${plain} 启动 soga4"
+    echo ""
+    echo -e "${green}【停止选项】${plain}"
+    echo -e "  ${green}25.${plain} 停止 soga"
+    echo -e "  ${green}26.${plain} 停止 soga2"
+    echo -e "  ${green}27.${plain} 停止 soga3"
+    echo -e "  ${green}28.${plain} 停止 soga4"
+    echo ""
     echo -e "${green}【重启选项】${plain}"
-    echo -e "  ${green}8.${plain} 重新启动 soga"
-    echo -e "  ${green}9.${plain} 重新启动 soga2"
-    echo -e "  ${green}10.${plain} 重新启动 soga3"
-    echo -e "  ${green}11.${plain} 重新启动 soga4"
+    echo -e "  ${green}29.${plain} 重启 soga"
+    echo -e "  ${green}30.${plain} 重启 soga2"
+    echo -e "  ${green}31.${plain} 重启 soga3"
+    echo -e "  ${green}32.${plain} 重启 soga4"
     echo ""
     echo -e "${green}【日志选项】${plain}"
     echo -e "  ${green}12.${plain} 查看 soga 日志"
     echo -e "  ${green}13.${plain} 查看 soga2 日志"
     echo -e "  ${green}14.${plain} 查看 soga3 日志"
     echo -e "  ${green}15.${plain} 查看 soga4 日志"
+    echo ""
+    echo -e "${green}【Screen 选项】${plain}"
+    echo -e "  ${green}20.${plain} 进入 soga screen 窗口（查看日志）"
+    echo -e "  ${green}21.${plain} 进入 soga2 screen 窗口（查看日志）"
+    echo -e "  ${green}22.${plain} 进入 soga3 screen 窗口（查看日志）"
+    echo -e "  ${green}23.${plain} 进入 soga4 screen 窗口（查看日志）"
+    echo -e "  ${green}24.${plain} 查看所有 screen 窗口"
     echo ""
     echo -e "${green}【卸载选项】${plain}"
     echo -e "  ${green}16.${plain} 卸载 soga"
@@ -687,6 +848,10 @@ show_main_menu() {
     echo -e "  ${green}99.${plain} 退出脚本"
     echo ""
     echo -e "${blue}========================================${plain}"
+    echo ""
+    echo -e "${yellow}提示: soga 使用 screen 在后台运行${plain}"
+    echo -e "${yellow}      使用 'screen -r ${instance_name}' 查看日志${plain}"
+    echo ""
 }
 
 # 主逻辑
@@ -699,7 +864,7 @@ main() {
     
     while true; do
         show_main_menu
-        read -p "请选择 [0-19, 99]: " choice
+        read -p "请选择 [0-32, 99]: " choice
         
         case "${choice}" in
         0)
@@ -744,15 +909,39 @@ main() {
             esac
             ;;
         8)
-            restart_instance "soga"
+            start_instance "soga"
             ;;
         9)
-            restart_instance "soga2"
+            start_instance "soga2"
             ;;
         10)
-            restart_instance "soga3"
+            start_instance "soga3"
             ;;
         11)
+            start_instance "soga4"
+            ;;
+        25)
+            stop_instance "soga"
+            ;;
+        26)
+            stop_instance "soga2"
+            ;;
+        27)
+            stop_instance "soga3"
+            ;;
+        28)
+            stop_instance "soga4"
+            ;;
+        29)
+            restart_instance "soga"
+            ;;
+        30)
+            restart_instance "soga2"
+            ;;
+        31)
+            restart_instance "soga3"
+            ;;
+        32)
             restart_instance "soga4"
             ;;
         12)
@@ -779,12 +968,34 @@ main() {
         19)
             uninstall_instance "soga4"
             ;;
+        20)
+            enter_screen "soga"
+            ;;
+        21)
+            enter_screen "soga2"
+            ;;
+        22)
+            enter_screen "soga3"
+            ;;
+        23)
+            enter_screen "soga4"
+            ;;
+        24)
+            if is_cmd_exist "screen"; then
+                echo -e "${blue}所有 screen 窗口:${plain}"
+                screen -ls
+            else
+                echo -e "${yellow}screen 未安装${plain}"
+                check_and_install_screen
+            fi
+            wait_for_enter
+            ;;
         99)
             echo -e "${green}退出脚本${plain}"
             exit 0
             ;;
         *)
-            echo -e "${red}请输入正确的数字 [0-19, 99]${plain}"
+            echo -e "${red}请输入正确的数字 [0-32, 99]${plain}"
             sleep 2
             ;;
         esac

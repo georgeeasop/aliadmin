@@ -611,6 +611,22 @@ show_log() {
  if [[ $2 == "" ]]; then
  n="1000"
  fi
+ 
+ # 确定配置目录
+ local config_dir="${CONFIG_DIR}"
+ 
+ # 显示日志文件位置
+ echo -e "${yellow}日志文件位置: ${config_dir}/*.log${plain}"
+ 
+ # 显示最新的日志文件
+ local latest_log=$(ls -t ${config_dir}/*.log 2>/dev/null | head -1)
+ if [[ -n "$latest_log" && -f "$latest_log" ]]; then
+   local file_size=$(du -h "$latest_log" | cut -f1)
+   echo -e "${green}最新日志文件: $(basename $latest_log) (${file_size})${plain}"
+ fi
+ echo ""
+ 
+ # 查看 systemd 服务日志
  journalctl -u ${INSTANCE_NAME}.service -e --no-pager -f -n "${n}"
  if [[ $# == 0 ]]; then
  before_show_menu
@@ -1083,15 +1099,78 @@ config_instance_default() {
                 echo -e "${green}配置内容预览:${plain}"
                 echo "$actual_config" | head -3
                 
-                # 重启服务
+                # 重启服务 - 严格验证实例名称
+                echo ""
+                echo -e "${yellow}========================================${plain}"
+                echo -e "${yellow}准备重启服务${plain}"
+                echo -e "${yellow}实例名称: ${instance_name}${plain}"
+                echo -e "${yellow}服务名称: ${instance_name}.service${plain}"
+                echo -e "${yellow}========================================${plain}"
+                
+                # 验证服务文件是否存在且正确
+                local service_file="/etc/systemd/system/${instance_name}.service"
+                if [[ ! -f "$service_file" ]]; then
+                    echo -e "${red}错误: 服务文件不存在: ${service_file}${plain}"
+                    wait_for_enter
+                    return 1
+                fi
+                
+                # 验证服务文件中的 ExecStart 路径
+                local service_exec=$(grep "ExecStart=" "$service_file" 2>/dev/null | cut -d'=' -f2 | cut -d' ' -f1)
+                local expected_exec="/usr/local/${instance_name}/soga"
+                if [[ "$instance_name" == "soga" ]]; then
+                    expected_exec="/usr/local/soga/soga"
+                fi
+                
+                if [[ "$service_exec" != "$expected_exec" ]]; then
+                    echo -e "${red}警告: 服务文件中的 ExecStart 路径不正确！${plain}"
+                    echo -e "${red}预期: ${expected_exec}${plain}"
+                    echo -e "${red}实际: ${service_exec}${plain}"
+                    echo -e "${yellow}请先修复服务文件（选项 22 或 23）${plain}"
+                    wait_for_enter
+                    return 1
+                fi
+                
+                # 验证可执行文件是否存在
+                if [[ ! -f "$expected_exec" ]]; then
+                    echo -e "${red}错误: 可执行文件不存在: ${expected_exec}${plain}"
+                    echo -e "${yellow}请检查 ${instance_name} 是否已正确安装${plain}"
+                    wait_for_enter
+                    return 1
+                fi
+                
+                echo -e "${green}✓ 服务文件验证通过${plain}"
+                echo -e "${green}✓ 可执行文件存在${plain}"
                 echo ""
                 echo -e "${yellow}正在重启 ${instance_name}...${plain}"
-                systemctl restart ${instance_name}
+                
+                # 使用明确的实例名称重启
+                systemctl restart ${instance_name}.service
+                local restart_result=$?
                 sleep 2
-                if systemctl is-active --quiet ${instance_name}; then
-                    echo -e "${green}${instance_name} 重启成功！${plain}"
+                
+                if [[ $restart_result -eq 0 ]]; then
+                    if systemctl is-active --quiet ${instance_name}; then
+                        echo -e "${green}${instance_name} 重启成功！${plain}"
+                        
+                        # 验证日志，确认重启的是正确的实例
+                        sleep 1
+                        local log_check=$(journalctl -u ${instance_name}.service -n 3 --no-pager 2>/dev/null | grep -E "Started|Stopped" | tail -1)
+                        if [[ -n "$log_check" ]]; then
+                            if echo "$log_check" | grep -q "${instance_name}"; then
+                                echo -e "${green}✓ 日志确认: 重启的是 ${instance_name}${plain}"
+                            else
+                                echo -e "${yellow}⚠ 警告: 日志可能显示重启了其他实例${plain}"
+                                echo -e "${yellow}  日志: ${log_check}${plain}"
+                            fi
+                        fi
+                    else
+                        echo -e "${red}${instance_name} 重启失败，请检查日志${plain}"
+                        echo -e "${yellow}查看日志: journalctl -u ${instance_name}.service -n 20${plain}"
+                    fi
                 else
-                    echo -e "${red}${instance_name} 重启失败，请检查日志${plain}"
+                    echo -e "${red}重启命令执行失败 (退出码: $restart_result)${plain}"
+                    echo -e "${yellow}查看日志: journalctl -u ${instance_name}.service -n 20${plain}"
                 fi
             else
                 echo -e "${red}配置写入失败，配置文件内容未更新${plain}"
@@ -1215,15 +1294,78 @@ config_instance_custom() {
                 echo -e "${green}配置内容预览:${plain}"
                 echo "$actual_config" | head -3
                 
-                # 重启服务
+                # 重启服务 - 严格验证实例名称（自定义配置）
+                echo ""
+                echo -e "${yellow}========================================${plain}"
+                echo -e "${yellow}准备重启服务${plain}"
+                echo -e "${yellow}实例名称: ${instance_name}${plain}"
+                echo -e "${yellow}服务名称: ${instance_name}.service${plain}"
+                echo -e "${yellow}========================================${plain}"
+                
+                # 验证服务文件是否存在且正确
+                local service_file="/etc/systemd/system/${instance_name}.service"
+                if [[ ! -f "$service_file" ]]; then
+                    echo -e "${red}错误: 服务文件不存在: ${service_file}${plain}"
+                    wait_for_enter
+                    return 1
+                fi
+                
+                # 验证服务文件中的 ExecStart 路径
+                local service_exec=$(grep "ExecStart=" "$service_file" 2>/dev/null | cut -d'=' -f2 | cut -d' ' -f1)
+                local expected_exec="/usr/local/${instance_name}/soga"
+                if [[ "$instance_name" == "soga" ]]; then
+                    expected_exec="/usr/local/soga/soga"
+                fi
+                
+                if [[ "$service_exec" != "$expected_exec" ]]; then
+                    echo -e "${red}警告: 服务文件中的 ExecStart 路径不正确！${plain}"
+                    echo -e "${red}预期: ${expected_exec}${plain}"
+                    echo -e "${red}实际: ${service_exec}${plain}"
+                    echo -e "${yellow}请先修复服务文件（选项 22 或 23）${plain}"
+                    wait_for_enter
+                    return 1
+                fi
+                
+                # 验证可执行文件是否存在
+                if [[ ! -f "$expected_exec" ]]; then
+                    echo -e "${red}错误: 可执行文件不存在: ${expected_exec}${plain}"
+                    echo -e "${yellow}请检查 ${instance_name} 是否已正确安装${plain}"
+                    wait_for_enter
+                    return 1
+                fi
+                
+                echo -e "${green}✓ 服务文件验证通过${plain}"
+                echo -e "${green}✓ 可执行文件存在${plain}"
                 echo ""
                 echo -e "${yellow}正在重启 ${instance_name}...${plain}"
-                systemctl restart ${instance_name}
+                
+                # 使用明确的实例名称重启
+                systemctl restart ${instance_name}.service
+                local restart_result=$?
                 sleep 2
-                if systemctl is-active --quiet ${instance_name}; then
-                    echo -e "${green}${instance_name} 重启成功！${plain}"
+                
+                if [[ $restart_result -eq 0 ]]; then
+                    if systemctl is-active --quiet ${instance_name}; then
+                        echo -e "${green}${instance_name} 重启成功！${plain}"
+                        
+                        # 验证日志，确认重启的是正确的实例
+                        sleep 1
+                        local log_check=$(journalctl -u ${instance_name}.service -n 3 --no-pager 2>/dev/null | grep -E "Started|Stopped" | tail -1)
+                        if [[ -n "$log_check" ]]; then
+                            if echo "$log_check" | grep -q "${instance_name}"; then
+                                echo -e "${green}✓ 日志确认: 重启的是 ${instance_name}${plain}"
+                            else
+                                echo -e "${yellow}⚠ 警告: 日志可能显示重启了其他实例${plain}"
+                                echo -e "${yellow}  日志: ${log_check}${plain}"
+                            fi
+                        fi
+                    else
+                        echo -e "${red}${instance_name} 重启失败，请检查日志${plain}"
+                        echo -e "${yellow}查看日志: journalctl -u ${instance_name}.service -n 20${plain}"
+                    fi
                 else
-                    echo -e "${red}${instance_name} 重启失败，请检查日志${plain}"
+                    echo -e "${red}重启命令执行失败 (退出码: $restart_result)${plain}"
+                    echo -e "${yellow}查看日志: journalctl -u ${instance_name}.service -n 20${plain}"
                 fi
             else
                 echo -e "${red}配置写入失败，配置文件内容未更新${plain}"
@@ -1251,13 +1393,76 @@ restart_instance() {
         return 1
     fi
     
+    echo -e "${yellow}========================================${plain}"
+    echo -e "${yellow}准备重启服务${plain}"
+    echo -e "${yellow}实例名称: ${instance_name}${plain}"
+    echo -e "${yellow}服务名称: ${instance_name}.service${plain}"
+    echo -e "${yellow}========================================${plain}"
+    
+    # 验证服务文件是否存在且正确
+    local service_file="/etc/systemd/system/${instance_name}.service"
+    if [[ ! -f "$service_file" ]]; then
+        echo -e "${red}错误: 服务文件不存在: ${service_file}${plain}"
+        wait_for_enter
+        return 1
+    fi
+    
+    # 验证服务文件中的 ExecStart 路径
+    local service_exec=$(grep "ExecStart=" "$service_file" 2>/dev/null | cut -d'=' -f2 | cut -d' ' -f1)
+    local expected_exec="/usr/local/${instance_name}/soga"
+    if [[ "$instance_name" == "soga" ]]; then
+        expected_exec="/usr/local/soga/soga"
+    fi
+    
+    if [[ "$service_exec" != "$expected_exec" ]]; then
+        echo -e "${red}警告: 服务文件中的 ExecStart 路径不正确！${plain}"
+        echo -e "${red}预期: ${expected_exec}${plain}"
+        echo -e "${red}实际: ${service_exec}${plain}"
+        echo -e "${yellow}请先修复服务文件（选项 22 或 23）${plain}"
+        wait_for_enter
+        return 1
+    fi
+    
+    # 验证可执行文件是否存在
+    if [[ ! -f "$expected_exec" ]]; then
+        echo -e "${red}错误: 可执行文件不存在: ${expected_exec}${plain}"
+        echo -e "${yellow}请检查 ${instance_name} 是否已正确安装${plain}"
+        wait_for_enter
+        return 1
+    fi
+    
+    echo -e "${green}✓ 服务文件验证通过${plain}"
+    echo -e "${green}✓ 可执行文件存在${plain}"
+    echo ""
     echo -e "${yellow}正在重启 ${instance_name}...${plain}"
-    systemctl restart ${instance_name}
+    
+    # 使用明确的实例名称重启
+    systemctl restart ${instance_name}.service
+    local restart_result=$?
     sleep 2
-    if systemctl is-active --quiet ${instance_name}; then
-        echo -e "${green}${instance_name} 重启成功！${plain}"
+    
+    if [[ $restart_result -eq 0 ]]; then
+        if systemctl is-active --quiet ${instance_name}; then
+            echo -e "${green}${instance_name} 重启成功！${plain}"
+            
+            # 验证日志，确认重启的是正确的实例
+            sleep 1
+            local log_check=$(journalctl -u ${instance_name}.service -n 3 --no-pager 2>/dev/null | grep -E "Started|Stopped" | tail -1)
+            if [[ -n "$log_check" ]]; then
+                if echo "$log_check" | grep -q "${instance_name}"; then
+                    echo -e "${green}✓ 日志确认: 重启的是 ${instance_name}${plain}"
+                else
+                    echo -e "${yellow}⚠ 警告: 日志可能显示重启了其他实例${plain}"
+                    echo -e "${yellow}  日志: ${log_check}${plain}"
+                fi
+            fi
+        else
+            echo -e "${red}${instance_name} 重启失败，请检查日志${plain}"
+            echo -e "${yellow}查看日志: journalctl -u ${instance_name}.service -n 20${plain}"
+        fi
     else
-        echo -e "${red}${instance_name} 重启失败，请检查日志${plain}"
+        echo -e "${red}重启命令执行失败 (退出码: $restart_result)${plain}"
+        echo -e "${yellow}查看日志: journalctl -u ${instance_name}.service -n 20${plain}"
     fi
     
     wait_for_enter
@@ -1273,9 +1478,60 @@ view_log() {
         return 1
     fi
     
-    echo -e "${blue}查看 ${instance_name} 日志（按 Ctrl+C 退出）...${plain}"
+    # 确定配置目录
+    local config_dir="/etc/${instance_name}"
+    if [[ "$instance_name" == "soga" ]]; then
+        config_dir="/etc/soga"
+    fi
+    
+    echo -e "${blue}========================================${plain}"
+    echo -e "${green}查看 ${instance_name} 日志${plain}"
+    echo -e "${blue}========================================${plain}"
     echo ""
-    journalctl -u ${instance_name}.service -f --no-pager -n 100 || true
+    echo -e "${yellow}日志文件位置: ${config_dir}/*.log${plain}"
+    
+    # 显示配置目录中的日志文件
+    local log_files=$(ls -t ${config_dir}/*.log 2>/dev/null | head -5)
+    if [[ -n "$log_files" ]]; then
+        echo -e "${green}找到的日志文件:${plain}"
+        echo "$log_files" | while read log_file; do
+            if [[ -f "$log_file" ]]; then
+                local file_size=$(du -h "$log_file" | cut -f1)
+                echo -e "  ${green}✓${plain} $(basename $log_file) (${file_size})"
+            fi
+        done
+        echo ""
+    fi
+    
+    echo -e "${yellow}查看方式:${plain}"
+    echo -e "  1. systemd 服务日志（实时，按 Ctrl+C 退出）"
+    echo -e "  2. 查看最新的日志文件内容"
+    echo ""
+    read -p "请选择 [1/2，默认1]: " log_choice
+    log_choice=${log_choice:-1}
+    
+    if [[ "$log_choice" == "2" ]]; then
+        # 查看最新的日志文件
+        local latest_log=$(ls -t ${config_dir}/*.log 2>/dev/null | head -1)
+        if [[ -n "$latest_log" && -f "$latest_log" ]]; then
+            echo ""
+            echo -e "${blue}查看日志文件: ${latest_log}${plain}"
+            echo -e "${yellow}（显示最后 100 行，按 q 退出）${plain}"
+            echo ""
+            tail -n 100 "$latest_log" | less -R
+        else
+            echo -e "${yellow}未找到日志文件，查看 systemd 服务日志...${plain}"
+            echo ""
+            journalctl -u ${instance_name}.service -f --no-pager -n 100 || true
+        fi
+    else
+        # 查看 systemd 服务日志
+        echo ""
+        echo -e "${blue}查看 systemd 服务日志（按 Ctrl+C 退出）...${plain}"
+        echo ""
+        journalctl -u ${instance_name}.service -f --no-pager -n 100 || true
+    fi
+    
     wait_for_enter
 }
 

@@ -269,19 +269,26 @@ install_soga_instance() {
     echo -e "${yellow}配置文件: ${config_dir}/soga.conf${plain}"
     echo ""
     
-    # 检查其他已安装的实例（兼容性检查）
+    # 检查其他已安装的实例（只检查配置目录）
     echo -e "${yellow}检查已安装的实例...${plain}"
     local other_instances=()
-    for i in soga soga1 soga2 soga3 soga4; do
-        if [[ "$i" != "$instance_name" ]] && is_instance_installed "$i"; then
-            other_instances+=("$i")
-            local run_mode=""
-            if is_instance_using_systemd "$i"; then
-                run_mode="(systemd)"
-            elif is_instance_running "$i"; then
-                run_mode="(screen)"
+    for i in soga soga2 soga3 soga4; do
+        if [[ "$i" != "$instance_name" ]]; then
+            local other_config="/etc/${i}"
+            if [[ "$i" == "soga" ]]; then
+                other_config="/etc/soga"
             fi
-            echo -e "  ${green}✓${plain} ${i} 已安装 ${run_mode}"
+            
+            if [[ -d "$other_config" ]] && [[ -f "$other_config/soga.conf" ]]; then
+                other_instances+=("$i")
+                local run_mode=""
+                if screen -list 2>/dev/null | grep -q "${i}"; then
+                    run_mode="(screen)"
+                elif systemctl is-active --quiet ${i} 2>/dev/null; then
+                    run_mode="(systemd)"
+                fi
+                echo -e "  ${green}✓${plain} ${i} 已安装 ${run_mode}"
+            fi
         fi
     done
     
@@ -303,54 +310,9 @@ install_soga_instance() {
         return 1
     fi
     
-    # 检查实例是否已存在
-    if is_instance_installed ${instance_name}; then
-        echo -e "${yellow}${instance_name} 实例已存在${plain}"
-        
-        # 检查是否使用 systemd（旧脚本方式）
-        if is_instance_using_systemd ${instance_name}; then
-            echo -e "${yellow}检测到 ${instance_name} 使用 systemd 方式运行（旧脚本）${plain}"
-            echo -e "${yellow}新脚本使用 screen 方式运行，建议迁移到 screen 方式${plain}"
-            echo ""
-            read -p "是否要迁移到 screen 方式? (y/n, 默认: n): " migrate
-            migrate=${migrate:-n}
-            
-            if [[ "$migrate" == "y" || "$migrate" == "Y" ]]; then
-                # 迁移到 screen 方式
-                echo -e "${yellow}正在迁移 ${instance_name} 到 screen 方式...${plain}"
-                
-                # 停止 systemd 服务
-                if is_instance_running ${instance_name}; then
-                    systemctl stop ${instance_name} 2>/dev/null
-                    systemctl disable ${instance_name} 2>/dev/null
-                    sleep 2
-                fi
-                
-                # 确保配置目录存在
-                if [[ ! -d "$config_dir" ]]; then
-                    mkdir -p "$config_dir"
-                fi
-                
-                # 如果配置文件不存在，从旧位置复制
-                if [[ ! -f "$config_dir/soga.conf" ]]; then
-                    local old_config="/etc/soga/soga.conf"
-                    if [[ "$instance_name" != "soga" ]]; then
-                        old_config="/etc/${instance_name}/soga.conf"
-                    fi
-                    
-                    if [[ -f "$old_config" ]]; then
-                        cp "$old_config" "$config_dir/soga.conf"
-                        echo -e "${green}已复制配置文件${plain}"
-                    fi
-                fi
-                
-                echo -e "${green}迁移完成！${instance_name} 现在使用 screen 方式${plain}"
-                echo ""
-            else
-                echo -e "${yellow}保持 systemd 方式，继续安装...${plain}"
-            fi
-        fi
-        
+    # 检查实例是否已存在（只检查配置目录，不检查 systemd）
+    if [[ -d "$config_dir" ]] && [[ -f "$config_dir/soga.conf" ]]; then
+        echo -e "${yellow}${instance_name} 实例已存在（配置目录: ${config_dir}）${plain}"
         read -p "是否要重新安装? (y/n, 默认: n): " reinstall
         reinstall=${reinstall:-n}
         if [[ "$reinstall" != "y" && "$reinstall" != "Y" ]]; then
@@ -358,10 +320,11 @@ install_soga_instance() {
             return 0
         fi
         
-        # 停止运行中的实例
-        if is_instance_running ${instance_name}; then
-            echo -e "${yellow}停止运行中的 ${instance_name}...${plain}"
-            stop_instance ${instance_name}
+        # 只停止 screen 方式运行的实例（不处理 systemd）
+        if screen -list 2>/dev/null | grep -q "${instance_name}"; then
+            echo -e "${yellow}停止运行中的 ${instance_name} (screen 方式)...${plain}"
+            screen -S ${instance_name} -X quit 2>/dev/null
+            sleep 1
         fi
     fi
     

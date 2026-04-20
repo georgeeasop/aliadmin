@@ -14,8 +14,8 @@ apt update && apt install -y sshpass rsync
 # 同步核心函数
 do_sync() {
     echo "正在同步证书..."
-    sshpass -p "$MASTER_PASS" scp -P "$MASTER_PORT" -o StrictHostKeyChecking=no root@$MASTER_IP:/etc/soga/vowa88.top.crt ${SYNC_DIR}vowa88.top.crt
-    sshpass -p "$MASTER_PASS" scp -P "$MASTER_PORT" -o StrictHostKeyChecking=no root@$MASTER_IP:/etc/soga/vowa88.top.key ${SYNC_DIR}vowa88.top.key
+    sshpass -p "$MASTER_PASS" scp -P "$MASTER_PORT" -o StrictHostKeyChecking=no root@$MASTER_IP:/etc/soga/mexta.click.crt ${SYNC_DIR}mexta.click.crt
+    sshpass -p "$MASTER_PASS" scp -P "$MASTER_PORT" -o StrictHostKeyChecking=no root@$MASTER_IP:/etc/soga/mexta.click.key ${SYNC_DIR}mexta.click.key
     if [ $? -eq 0 ]; then
         echo "$(date '+%Y-%m-%d %H:%M:%S') - 同步成功" >> $LOG_FILE
         systemctl restart soga

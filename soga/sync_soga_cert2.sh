@@ -5,8 +5,8 @@ MASTER_IP="131.186.1.95"
 MASTER_PORT="22"
 MASTER_PASS="n4Vzg74PysnXNV3"
 SYNC_DIR="/etc/soga4/"
-LOG_FILE="/var/log/soga_cert_sync.log"
-SCRIPT_PATH="/root/sync_soga_cert.sh"
+LOG_FILE="/var/log/soga_cert_sync2.log"
+SCRIPT_PATH="/root/sync_soga_cert2.sh"
 
 # 环境检查与安装函数
 setup_env() {

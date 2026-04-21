@@ -12,9 +12,9 @@ SCRIPT_PATH="/root/sync_soga_cert.sh"
 setup_env() {
     echo "正在检查并更新系统环境..."
     apt update && apt install -y sshpass rsync
-    # 确保定时任务存在 (默认每 1 天同步一次)
+ # 确保定时任务存在 (修改为每半个月一次，即每月 1 号和 15 号凌晨 3 点)
     if ! crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH"; then
-        (crontab -l 2>/dev/null; echo "0 3 */1 * * $SCRIPT_PATH > /dev/null 2>&1") | crontab -
+        (crontab -l 2>/dev/null; echo "0 3 1,15 * * $SCRIPT_PATH > /dev/null 2>&1") | crontab -
     fi
 }
 

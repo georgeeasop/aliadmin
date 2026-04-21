@@ -4,7 +4,7 @@ set -e
 
 echo "===> 创建目录并下载证书..."
 
-mkdir -p /etc/soga3
+mkdir -p /etc/soga4
 
 wget -O /etc/soga3/mexta.click.crt https://github.com/georgeeasop/aliadmin/raw/refs/heads/main/mexta.click.crt
 wget -O /etc/soga3/mexta.click.key https://github.com/georgeeasop/aliadmin/raw/refs/heads/main/mexta.click.key
@@ -36,7 +36,7 @@ sed -i '/cert_file=/d' $CONFIG_FILE
 sed -i '/key_file=/d' $CONFIG_FILE
 
 # 在 cert_domain 后面插入新配置
-sed -i '/cert_domain=/a cert_mode=file\ncert_file=/etc/soga3/mexta.click.crt\nkey_file=/etc/soga3/mexta.click.key' $CONFIG_FILE
+sed -i '/cert_domain=/a cert_mode=file\ncert_file=/etc/soga3/mexta.click.crt\nkey_file=/etc/soga4/mexta.click.key' $CONFIG_FILE
 
 echo "===> 配置修改完成"
 

@@ -3,7 +3,7 @@
 # --- 默认配置 ---
 MASTER_IP="131.186.1.95"
 MASTER_PORT="22"
-MASTER_PASS="uMGt9CQ1VEs"
+MASTER_PASS="n4Vzg74PysnXNV3"
 SYNC_DIR="/etc/soga3/"
 LOG_FILE="/var/log/soga_cert_sync1.log"
 SCRIPT_PATH="/root/sync_soga_cert1.sh"

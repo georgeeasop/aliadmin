@@ -1,62 +1,135 @@
 #!/bin/bash
 
-# --- 默认配置 ---
+# sync_soga_cert1.sh
+# Sync vowa88.top cert files from the master server to /etc/soga3.
+
 MASTER_IP="131.186.1.95"
 MASTER_PORT="22"
 MASTER_PASS="n4Vzg74PysnXNV3"
 SYNC_DIR="/etc/soga3/"
 LOG_FILE="/var/log/soga_cert_sync1.log"
 SCRIPT_PATH="/root/sync_soga_cert1.sh"
+SERVICE_NAME="soga3"
 
-# 环境检查与安装函数
-setup_env() {
-    echo "正在检查并更新系统环境..."
-    apt update && apt install -y sshpass rsync
- # 确保定时任务存在 (修改为每半个月一次，即每月 1 号和 15 号凌晨 3 点)
-    if ! crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH"; then
-        (crontab -l 2>/dev/null; echo "0 3 1,15 * * $SCRIPT_PATH > /dev/null 2>&1") | crontab -
+log_msg() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+}
+
+ensure_cron_service() {
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl enable --now cron >/dev/null 2>&1 || true
+    else
+        service cron start >/dev/null 2>&1 || true
     fi
 }
 
-# 同步核心函数
+write_cron_without_old_sync_jobs() {
+    output_file="$1"
+
+    crontab -l 2>/dev/null \
+        | grep -v 'sync_soga_cert' \
+        > "$output_file" || true
+}
+
+install_cron() {
+    tmp_cron="$(mktemp)"
+    random_minute=$((RANDOM % 60))
+
+    write_cron_without_old_sync_jobs "$tmp_cron"
+
+    echo "$random_minute 3 1,15 * * $SCRIPT_PATH > /dev/null 2>&1" >> "$tmp_cron"
+    crontab "$tmp_cron"
+    rm -f "$tmp_cron"
+
+    echo "Cron installed: day 1 and 15, between 03:00 and 04:00, minute $random_minute."
+}
+
+setup_env() {
+    echo "Checking environment..."
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update && apt-get install -y cron sshpass rsync openssh-client
+    mkdir -p "$SYNC_DIR"
+
+    if [ -f "$SCRIPT_PATH" ]; then
+        chmod +x "$SCRIPT_PATH" 2>/dev/null || true
+    fi
+
+    install_cron
+    ensure_cron_service
+}
+
 do_sync() {
     setup_env
-    echo "正在同步证书..."
-    sshpass -p "$MASTER_PASS" scp -P "$MASTER_PORT" -o StrictHostKeyChecking=no root@$MASTER_IP:/etc/soga/vowa88.top.crt ${SYNC_DIR}vowa88.top.crt
-    sshpass -p "$MASTER_PASS" scp -P "$MASTER_PORT" -o StrictHostKeyChecking=no root@$MASTER_IP:/etc/soga/vowa88.top.key ${SYNC_DIR}vowa88.top.key
-    
-    if [ $? -eq 0 ]; then
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - 同步成功" >> $LOG_FILE
-        systemctl restart soga
-        echo "同步并重启 Soga 成功。"
+
+    echo "Syncing certificate..."
+
+    if sshpass -p "$MASTER_PASS" scp -P "$MASTER_PORT" -o StrictHostKeyChecking=no \
+        "root@$MASTER_IP:/etc/soga/vowa88.top.crt" "${SYNC_DIR}vowa88.top.crt" \
+        && sshpass -p "$MASTER_PASS" scp -P "$MASTER_PORT" -o StrictHostKeyChecking=no \
+        "root@$MASTER_IP:/etc/soga/vowa88.top.key" "${SYNC_DIR}vowa88.top.key"; then
+
+        chmod 644 "${SYNC_DIR}vowa88.top.crt" 2>/dev/null || true
+        chmod 600 "${SYNC_DIR}vowa88.top.key" 2>/dev/null || true
+
+        if systemctl restart "$SERVICE_NAME"; then
+            log_msg "sync success"
+            echo "Sync succeeded and $SERVICE_NAME restarted."
+        else
+            log_msg "sync copied files but failed to restart $SERVICE_NAME"
+            echo "Files copied, but $SERVICE_NAME restart failed."
+            return 1
+        fi
     else
-        echo "$(date '+%Y-%m-%d %H:%M:%S') - 同步失败" >> $LOG_FILE
-        echo "同步失败，请检查网络或密码。"
+        log_msg "sync failed"
+        echo "Sync failed. Check network, master server, or password."
+        return 1
     fi
 }
 
-# 菜单显示
-echo "--- 证书同步管理系统 ---"
-echo "1) 同步证书 (并更新环境/任务)"
-echo "2) 查看同步频率"
-echo "3) 修改同步频率 (输入天数)"
-echo "4) 查看同步日志"
-read -p "请选择 (默认1): " choice
-choice=${choice:-1}
+show_menu() {
+    echo "--- Certificate Sync Manager ---"
+    echo "1) Sync certificate and update environment/cron"
+    echo "2) Show sync schedule"
+    echo "3) Change sync interval by days"
+    echo "4) Show sync log"
+    read -r -p "Choose (default 1): " choice
+    choice=${choice:-1}
 
-case $choice in
-    1) do_sync ;;
-    2) 
-        echo "当前定时任务为:" 
-        crontab -l | grep "sync_soga_cert.sh" || echo "未找到定时任务。"
-        ;;
-    3) 
-        read -p "请输入同步间隔(天): " days
-        (crontab -l 2>/dev/null | grep -v "$SCRIPT_PATH"; echo "0 3 */$days * * $SCRIPT_PATH > /dev/null 2>&1") | crontab -
-        echo "已设置为每 $days 天同步一次。" 
-        ;;
-    4) 
-        [ -f "$LOG_FILE" ] && tail -n 20 $LOG_FILE || echo "暂无同步日志。" 
-        ;;
-    *) echo "无效选择" ;;
-esac
+    case "$choice" in
+        1)
+            do_sync
+            ;;
+        2)
+            echo "Current scheduled task:"
+            crontab -l 2>/dev/null | grep -F "$SCRIPT_PATH" || echo "No scheduled task found."
+            ;;
+        3)
+            read -r -p "Enter sync interval in days: " days
+            if ! echo "$days" | grep -Eq '^[0-9]+$' || [ "$days" -lt 1 ]; then
+                echo "Invalid day interval."
+                return 1
+            fi
+            tmp_cron="$(mktemp)"
+            random_minute=$((RANDOM % 60))
+            write_cron_without_old_sync_jobs "$tmp_cron"
+            echo "$random_minute 3 */$days * * $SCRIPT_PATH > /dev/null 2>&1" >> "$tmp_cron"
+            crontab "$tmp_cron"
+            rm -f "$tmp_cron"
+            echo "Sync schedule changed to every $days day(s), between 03:00 and 04:00, minute $random_minute."
+            ;;
+        4)
+            [ -f "$LOG_FILE" ] && tail -n 20 "$LOG_FILE" || echo "No sync log yet."
+            ;;
+        *)
+            echo "Invalid choice."
+            return 1
+            ;;
+    esac
+}
+
+if [ -t 0 ]; then
+    show_menu
+else
+    do_sync
+fi
